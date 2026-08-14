@@ -3,11 +3,21 @@
   "workspace_roots": ["~/code/aegis-testlab/workspace"],
   "deny_paths": [".env", "*.pem", "id_rsa", "**/.aws/**", "**/.ssh/**"],
   "tool_rules": {
-    "read_file":      {"effect": "allow", "within": ["<workspace>"]},
-    "list_directory": {"effect": "allow", "within": ["<workspace>"]},
-    "write_file":     {"effect": "allow", "within": ["<workspace>"]},
-    "move_file":      {"effect": "ask"},
-    "delete_file":    {"effect": "deny"}
+    "read_file":                  {"effect": "allow", "within": ["<workspace>"]},
+    "read_text_file":             {"effect": "allow", "within": ["<workspace>"]},
+    "read_multiple_files":        {"effect": "allow", "within": ["<workspace>"]},
+    "read_media_file":            {"effect": "allow", "within": ["<workspace>"]},
+    "list_directory":             {"effect": "allow", "within": ["<workspace>"]},
+    "list_directory_with_sizes":  {"effect": "allow", "within": ["<workspace>"]},
+    "directory_tree":             {"effect": "allow", "within": ["<workspace>"]},
+    "search_files":               {"effect": "allow", "within": ["<workspace>"]},
+    "get_file_info":              {"effect": "allow", "within": ["<workspace>"]},
+    "list_allowed_directories":   {"effect": "allow"},
+    "write_file":                 {"effect": "allow", "within": ["<workspace>"]},
+    "create_directory":           {"effect": "allow", "within": ["<workspace>"]},
+    "edit_file":                  {"effect": "ask",   "within": ["<workspace>"]},
+    "move_file":                  {"effect": "ask",   "within": ["<workspace>"]},
+    "delete_file":                {"effect": "deny"}
   },
   "default_effect": "deny",
   "ask_behavior": "deny"
