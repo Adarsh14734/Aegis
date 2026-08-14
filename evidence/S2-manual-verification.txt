@@ -1,0 +1,12 @@
+=== S2 manual verification, macOS, Fri Aug 14 23:56:30 IST 2026 ===
+--- clean chain ---
+OK: 11 row(s) verified, chain intact
+db:   /Users/adarsh/Library/Application Support/Aegis/audit.db
+head: 7a2360168336105ee3989be90667a4966daa5a16af2a3981725793c5163e9abc
+note: record the head hash externally and re-check with --expect-head to detect truncation of the newest rows.
+exit=0
+--- row deleted ---
+FAIL: audit chain broken at row id 6
+  id sequence gap: expected id 5, found 6 (1 row(s) deleted or reordered)
+  4 row(s) verified before this point
+exit=1

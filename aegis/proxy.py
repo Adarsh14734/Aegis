@@ -10,7 +10,8 @@ CRITICAL: stdout is the JSON-RPC channel. Nothing may ever be printed to stdout
 except protocol frames. All logging goes to stderr.
 
 Fail-closed (S0 decision #3): any unexpected failure in parsing, policy loading,
-or evaluation results in the call being denied, never forwarded.
+evaluation, or *audit recording* results in the call being denied, never
+forwarded.
 """
 
 import asyncio
@@ -20,13 +21,16 @@ import sys
 import time
 from pathlib import Path
 
+from audit import AuditError, AuditStore, default_db_path
 from policy import Decision, Effect, Policy, PolicyError
 
 LOG_PREFIX = "[aegis]"
 
 
 def log(event: str, **fields) -> None:
-    """Structured line to stderr. S2 replaces this with the hash-chained store."""
+    """Structured line to stderr, for live debugging only. The durable record
+    is the hash-chained store in audit.py; stderr is volatile and unchained,
+    so nothing may be claimed on its strength alone."""
     record = {"ts": round(time.time(), 3), "event": event, **fields}
     print(f"{LOG_PREFIX} {json.dumps(record)}", file=sys.stderr, flush=True)
 
@@ -61,10 +65,11 @@ def denial_frame(request_id, decision: Decision) -> dict:
 
 
 class Proxy:
-    def __init__(self, policy: Policy, cwd: Path):
+    def __init__(self, policy: Policy, cwd: Path, store: AuditStore):
         self.policy = policy
         self.cwd = cwd
-        self.stats = {"seen": 0, "allowed": 0, "denied": 0}
+        self.store = store
+        self.stats = {"seen": 0, "allowed": 0, "denied": 0, "audit_failures": 0}
 
     def decide(self, message: dict) -> Decision:
         """Never raises. Any failure is a DENY (S0 decision #3)."""
@@ -84,6 +89,38 @@ class Proxy:
                 "fail_closed",
                 str((message.get("params") or {}).get("name", "?")),
             )
+
+    def audit(self, decision: Decision) -> Decision:
+        """Record the decision, then return the decision that is actually
+        enforced. Called before the call is forwarded and before any denial
+        frame is written, so no tool call can execute without a row committed.
+
+        C3 fail-closed: if the row cannot be written, the decision is replaced
+        with a DENY. An action nobody can reconstruct afterwards is worse than
+        an action that did not happen.
+        """
+        try:
+            row_id, row_hash = self.store.record(
+                tool=decision.tool,
+                effect=decision.effect.value,
+                rule_id=decision.rule_id,
+                reason=decision.reason,
+                paths=list(decision.paths),
+            )
+        except Exception as exc:  # noqa: BLE001 - deliberate catch-all, fail closed
+            # AuditError is the expected failure, but anything escaping here
+            # would otherwise kill this pump silently and stop enforcement.
+            self.stats["audit_failures"] += 1
+            log("audit_write_failed", error=f"{type(exc).__name__}: {exc}", tool=decision.tool)
+            return Decision(
+                Effect.DENY,
+                f"decision could not be recorded to the audit log ({exc}); failing closed",
+                "audit_fail_closed",
+                decision.tool,
+                decision.paths,
+            )
+        log("audit_row", id=row_id, hash=row_hash[:16])
+        return decision
 
 
 async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) -> None:
@@ -111,6 +148,7 @@ async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) ->
                 reason=decision.reason,
                 paths=list(decision.paths),
             )
+            decision = proxy.audit(decision)
             if not decision.is_allowed():
                 proxy.stats["denied"] += 1
                 async with out_lock:
@@ -146,11 +184,25 @@ async def run(server_cmd: list[str]) -> int:
         print(f"{LOG_PREFIX} refusing to start: {exc}", file=sys.stderr, flush=True)
         return 2
 
+    db_path = default_db_path()
+    try:
+        store = AuditStore.open(db_path)
+    except AuditError as exc:
+        # Same posture as a missing policy: a proxy that cannot record its
+        # decisions is not a degraded proxy, it is an absent control (A6).
+        log("startup_refused", error=str(exc), audit=str(db_path))
+        print(f"{LOG_PREFIX} refusing to start: {exc}", file=sys.stderr, flush=True)
+        return 2
+
+    head_id, head_hash = store.head()
     log(
         "started",
         policy=str(policy_path),
         roots=[str(r) for r in policy.workspace_roots],
         server=server_cmd,
+        audit=str(db_path),
+        audit_head_id=head_id,
+        audit_head_hash=head_hash[:16],
     )
 
     proc = await asyncio.create_subprocess_exec(
@@ -160,17 +212,21 @@ async def run(server_cmd: list[str]) -> int:
         stderr=None,  # child stderr passes through for debugging
     )
 
-    proxy = Proxy(policy, Path.cwd())
+    proxy = Proxy(policy, Path.cwd(), store)
     out_lock = asyncio.Lock()
 
-    await asyncio.gather(
-        pump_client_to_server(proxy, proc.stdin, out_lock),
-        pump_server_to_client(proc.stdout, out_lock),
-        return_exceptions=True,
-    )
+    try:
+        await asyncio.gather(
+            pump_client_to_server(proxy, proc.stdin, out_lock),
+            pump_server_to_client(proc.stdout, out_lock),
+            return_exceptions=True,
+        )
+        await proc.wait()
+    finally:
+        head_id, head_hash = store.head()
+        store.close()
 
-    await proc.wait()
-    log("stopped", **proxy.stats)
+    log("stopped", **proxy.stats, audit_head_id=head_id, audit_head_hash=head_hash)
     return 0
 
 

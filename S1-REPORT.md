@@ -182,7 +182,7 @@ five seconds of the S6 demo.
 ## Known gaps (do not claim these are handled)
 
 1. **Only `tools/call` is inspected.** `resources/read` and prompt injection through tool *descriptions* pass untouched. A hostile MCP server can still poison the model's reasoning.
-2. **No audit persistence.** Decisions go to stderr and vanish. S2.
+2. **No audit persistence.** Decisions go to stderr and vanish. S2. — *closed in S2: hash-chained SQLite store, see S2-REPORT.md. The stderr log remains, and remains evidentially worthless on its own.*
 3. **No egress control.** An allowed tool that makes network calls is unconstrained. S3.
 4. **No sandbox.** Aegis mediates the MCP channel; a bash tool bypasses it entirely. Anything not spoken over this stdio pipe is outside the boundary — THREAT-MODEL.md §7.6. **Observed live:** three of four attempts on the secret went via Bash and were stopped by Claude Code's own permission rules, not by Aegis. Aegis alone would not have blocked them.
 5. **Glob matching is `fnmatch`, not a real path matcher.** `**` behaves loosely. Worth replacing before anyone relies on it.

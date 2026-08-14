@@ -107,7 +107,7 @@ Out of scope (see §7), but stated so the boundary is explicit.
 |---|---|---|---|---|
 | C1 | Deterministic path allow/deny on every `tools/call` | T1, T2, T3 | S1 | UNVERIFIED |
 | C2 | Default-deny: unmatched action → ASK, never ALLOW | T1, T2 | S1 | UNVERIFIED |
-| C3 | Hash-chained append-only audit log + verifier CLI | A6, all | S2 | UNVERIFIED |
+| C3 | Hash-chained append-only audit log + verifier CLI | A6, all | S2 | VERIFIED (harness, macOS) — S2-REPORT.md |
 | C4 | TLS-terminating egress proxy, domain allowlist | T2, T3, T4 | S3 | UNVERIFIED |
 | C5 | DLP scan of outbound request bodies (key/PII patterns) | A1, A2 | S3 | UNVERIFIED |
 | C6 | Credential broker — secret never enters agent context | A1, T2 | S4 | UNVERIFIED |
@@ -180,7 +180,7 @@ least-privilege tool mediation · deny-by-default egress · tamper-evident audit
 - [ ] Which MCP transport is intercepted first — stdio or HTTP? (Recommend stdio: that is how Claude Code loads local servers.)
 - [ ] Where does the policy file live, and what prevents the agent from writing to it? (Must be outside every writable path granted to the agent. Verify with an actual write attempt.)
 - [ ] What is the failure mode if the Aegis proxy crashes mid-session — fail-open or fail-closed? (Must be fail-closed. Fail-open is a silent removal of every control.)
-- [ ] Does the audit verifier run offline, without the control plane? (It must, or a compromised control plane can lie about its own integrity.)
+- [x] Does the audit verifier run offline, without the control plane? (It must, or a compromised control plane can lie about its own integrity.) **Answered in S2:** `aegis/verify.py` imports only stdlib — nothing from Aegis — and carries its own independent copy of the chain rule, so editing `audit.py` cannot make forged rows validate. Caveat recorded in S2-REPORT.md: an attacker with write access can still rewrite the entire chain consistently, and only an externally anchored head hash detects that.
 
 ---
 

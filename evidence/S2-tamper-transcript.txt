@@ -1,0 +1,157 @@
+# Aegis S2 — raw tamper-harness output
+# host: macOS 26.5.1, Python 3.14.3, Fri Aug 14 23:46:16 IST 2026
+# command: python3 tests/tamper.py
+
+[aegis] created audit store /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/audit.db (mode 0600)
+[aegis] {"ts": 1786731376.78, "event": "started", "policy": "/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/policy.json", "roots": ["/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/workspace"], "server": ["/Library/Frameworks/Python.framework/Versions/3.14/bin/python3", "/Users/adarsh/code/aegis/tests/mock_fs_server.py"], "audit": "/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/audit.db", "audit_head_id": 0, "audit_head_hash": "0000000000000000"}
+[aegis] {"ts": 1786731376.784, "event": "tool_call", "tool": "read_file", "effect": "allow", "rule": "tool_rules.read_file", "reason": "matched allow rule", "paths": ["/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/workspace/config.txt"]}
+[aegis] {"ts": 1786731376.784, "event": "audit_row", "id": 1, "hash": "bc1df2785cef5595"}
+[aegis] {"ts": 1786731376.797, "event": "tool_call", "tool": "write_file", "effect": "allow", "rule": "tool_rules.write_file", "reason": "matched allow rule", "paths": ["/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/workspace/notes.txt"]}
+[aegis] {"ts": 1786731376.797, "event": "audit_row", "id": 2, "hash": "61a2775819d151c0"}
+[aegis] {"ts": 1786731376.797, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "deny_paths", "reason": "path matches deny rule '.env'", "paths": ["/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/workspace/.env"]}
+[aegis] {"ts": 1786731376.798, "event": "audit_row", "id": 3, "hash": "32d277d89f6aa494"}
+[aegis] {"ts": 1786731376.798, "event": "tool_call", "tool": "delete_file", "effect": "deny", "rule": "tool_rules.delete_file", "reason": "tool is denied by policy", "paths": ["/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/workspace/config.txt"]}
+[aegis] {"ts": 1786731376.798, "event": "audit_row", "id": 4, "hash": "924c17ca2a6af196"}
+[aegis] {"ts": 1786731376.798, "event": "tool_call", "tool": "exec_shell", "effect": "deny", "rule": "default_effect", "reason": "tool 'exec_shell' not present in tool_rules", "paths": []}
+[aegis] {"ts": 1786731376.798, "event": "audit_row", "id": 5, "hash": "78defdf1e8c8d44a"}
+[aegis] {"ts": 1786731376.798, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "tool_rules.read_file.within", "reason": "path /private/etc/passwd is outside every allowed root for this tool", "paths": ["/private/etc/passwd"]}
+[aegis] {"ts": 1786731376.798, "event": "audit_row", "id": 6, "hash": "26cf18ecc7b7d5b1"}
+[aegis] {"ts": 1786731376.801, "event": "stopped", "seen": 6, "allowed": 2, "denied": 4, "audit_failures": 0, "audit_head_id": 6, "audit_head_hash": "26cf18ecc7b7d5b180d7d4df0204bdb46f38a72fe16ac9dbec0601eaf50e751a"}
+[aegis] {"ts": 1786731377.261, "event": "audit_write_failed", "error": "AuditError: disk full (simulated)", "tool": "read_file"}
+
+==============================================================================
+1. DRIVE REAL DECISIONS THROUGH THE PROXY
+==============================================================================
+  [ALLOWED] legitimate read
+  [ALLOWED] legitimate write
+  [DENIED ] T2 read .env
+  [DENIED ] T1 delete
+  [DENIED ] T3 unknown tool
+  [DENIED ] T2 escape workspace
+
+audit db: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/audit.db
+file mode: 0o600  (expected: 0o600)
+journal_mode: wal  (expected: wal)
+  1  allow  read_file  tool_rules.read_file  bc1df2785cef
+  2  allow  write_file  tool_rules.write_file  61a2775819d1
+  3  deny  read_file  deny_paths  32d277d89f6a
+  4  deny  delete_file  tool_rules.delete_file  924c17ca2a6a
+  5  deny  exec_shell  default_effect  78defdf1e8c8
+  6  deny  read_file  tool_rules.read_file.within  26cf18ecc7b7
+
+==============================================================================
+2. VERIFY THE UNTOUCHED CHAIN
+==============================================================================
+
+$ python3 aegis/verify.py audit.db 
+  | OK: 6 row(s) verified, chain intact
+  | db:   /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/audit.db
+  | head: 26cf18ecc7b7d5b180d7d4df0204bdb46f38a72fe16ac9dbec0601eaf50e751a
+  | note: record the head hash externally and re-check with --expect-head to detect truncation of the newest rows.
+  exit=0   [expected exit=0]
+
+==============================================================================
+3. TAMPER A — flip a recorded DENY into an ALLOW
+==============================================================================
+  attacker ran: UPDATE audit SET effect='allow' WHERE id=3   (the .env read)
+
+$ python3 aegis/verify.py tamper-a.db 
+  | FAIL: audit chain broken at row id 3
+  |   row_hash mismatch — row contents were altered
+  |   stored:     32d277d89f6aa4944ea6a8c42c4d8803bb35a99183a8cbf29a9e092c89a1da33
+  |   recomputed: b94219b6435134fc339fd97ec1c0ad370c9a1e19d4306129dc6c08158ce2e773
+  |   row: tool='read_file' effect='allow' rule_id='deny_paths'
+  |   2 row(s) verified before this point
+  exit=1   [expected exit=1]
+
+==============================================================================
+4. TAMPER B — delete a row entirely
+==============================================================================
+  attacker ran: DELETE FROM audit WHERE id=4   (the delete_file denial)
+
+$ python3 aegis/verify.py tamper-b.db 
+  | FAIL: audit chain broken at row id 5
+  |   id sequence gap: expected id 4, found 5 (1 row(s) deleted or reordered)
+  |   3 row(s) verified before this point
+  exit=1   [expected exit=1]
+
+==============================================================================
+5. TAMPER C — truncate the newest rows
+==============================================================================
+  attacker ran: DELETE FROM audit WHERE id >= 5   (drop the tail)
+  A shortened chain is still a well-formed chain, so the chain alone
+  cannot see this. It is caught only against an external anchor.
+
+$ python3 aegis/verify.py tamper-c.db 
+  | OK: 4 row(s) verified, chain intact
+  | db:   /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/tamper-c.db
+  | head: 924c17ca2a6af196accd44c3b4884d4acbf08b89ce4beea0e94bc161f0d2f6ab
+  | note: record the head hash externally and re-check with --expect-head to detect truncation of the newest rows.
+  exit=0   [LIMITATION: exit=0, tampering NOT detected]
+
+$ python3 aegis/verify.py tamper-c.db --expect-head 26cf18ecc7b7d5b180d7d4df0204bdb46f38a72fe16ac9dbec0601eaf50e751a
+  | FAIL: head hash does not match the anchor. The log is internally consistent but is not the log you anchored — rows were removed from the end, or the chain was rewritten wholesale.
+  |   anchored head: 26cf18ecc7b7d5b180d7d4df0204bdb46f38a72fe16ac9dbec0601eaf50e751a
+  |   actual head:   924c17ca2a6af196accd44c3b4884d4acbf08b89ce4beea0e94bc161f0d2f6ab
+  |   rows present:  4
+  exit=1   [expected exit=1]
+
+==============================================================================
+6. TAMPER D — attacker rewrites the chain forward (KNOWN LIMITATION)
+==============================================================================
+  An attacker with write access can edit a row and recompute every
+  hash after it. Nothing stored locally can prevent that.
+  THREAT-MODEL.md §7.2: root defeats Aegis. This is the demonstration.
+
+$ python3 aegis/verify.py tamper-d.db 
+  | OK: 6 row(s) verified, chain intact
+  | db:   /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/tamper-d.db
+  | head: a6d1ddfe858d381a400bd65a1a38aecb55cdd44e195302e9f32901c26ce2a7d3
+  | note: record the head hash externally and re-check with --expect-head to detect truncation of the newest rows.
+  exit=0   [LIMITATION: exit=0, forgery NOT detected]
+
+$ python3 aegis/verify.py tamper-d.db --expect-head 26cf18ecc7b7d5b180d7d4df0204bdb46f38a72fe16ac9dbec0601eaf50e751a
+  | FAIL: head hash does not match the anchor. The log is internally consistent but is not the log you anchored — rows were removed from the end, or the chain was rewritten wholesale.
+  |   anchored head: 26cf18ecc7b7d5b180d7d4df0204bdb46f38a72fe16ac9dbec0601eaf50e751a
+  |   actual head:   a6d1ddfe858d381a400bd65a1a38aecb55cdd44e195302e9f32901c26ce2a7d3
+  |   rows present:  6
+  exit=1   [expected exit=1]
+
+==============================================================================
+7. FAIL-CLOSED — an unwritable audit log must stop the proxy, not be skipped
+==============================================================================
+
+  audit db in an unwritable directory
+  | [aegis] {"ts": 1786731377.193, "event": "startup_refused", "error": "cannot open audit store at /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/readonly/sub/audit.db: [Errno 13] Permission denied: '/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/readonly/sub'", "audit": "/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/readonly/sub/audit.db"}
+  | [aegis] refusing to start: cannot open audit store at /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/readonly/sub/audit.db: [Errno 13] Permission denied: '/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/readonly/sub'
+  exit=2   [expected 2]
+
+  audit db is group/world writable (0666)
+  | [aegis] {"ts": 1786731377.237, "event": "startup_refused", "error": "audit db /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/loose.db is group/world writable (mode 0o666)", "audit": "/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/loose.db"}
+  | [aegis] refusing to start: audit db /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi/loose.db is group/world writable (mode 0o666)
+  exit=2   [expected 2]
+
+  mid-session write failure (in-process, not a live observation):
+  | policy said: allow
+  | enforced:    deny  rule=audit_fail_closed
+  | reason:      decision could not be recorded to the audit log (disk full (simulated)); failing closed
+  [pass] expected the ALLOW to collapse to deny
+
+==============================================================================
+SUMMARY
+==============================================================================
+  pass  exit=0 (expected 0)  untouched chain
+  pass  exit=1 (expected 1)  A: field edited
+  pass  exit=1 (expected 1)  B: row deleted (id gap)
+  pass  exit=0 (expected 0)  C: tail truncated, no anchor
+  pass  exit=1 (expected 1)  C: tail truncated, with anchor
+  pass  exit=0 (expected 0)  D: chain rewritten, no anchor
+  pass  exit=1 (expected 1)  D: chain rewritten, with anchor
+  pass  exit=2 (expected 2)  startup: unwritable audit dir
+  pass  exit=2 (expected 2)  startup: 0666 audit db
+  pass  exit=0 (expected 0)  mid-session write failure denies
+
+anchored head hash: 26cf18ecc7b7d5b180d7d4df0204bdb46f38a72fe16ac9dbec0601eaf50e751a
+temp lab: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s2-_t0p3gyi   (delete when done)
+
+RESULT: all cases behaved as specified

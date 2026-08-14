@@ -1,0 +1,31 @@
+# Aegis S2 — audit store at the real default macOS path
+# host: macOS 26.5.1, Python 3.14.3, Fri Aug 14 23:44:26 IST 2026
+# produced by: python3 tests/drive.py  (the unchanged S1 adversarial suite)
+
+$ ls -l ~/Library/Application\ Support/Aegis/
+total 96
+-rw-------@ 1 adarsh  staff  12288 Aug 14 23:43 audit.db
+-rw-------@ 1 adarsh  staff  32768 Aug 14 23:43 audit.db-shm
+-rw-------@ 1 adarsh  staff      0 Aug 14 23:43 audit.db-wal
+-rw-------@ 1 adarsh  staff   1400 Aug 14 18:28 policy.json
+
+$ sqlite3 audit.db 'PRAGMA journal_mode; SELECT id,effect,tool,rule_id,substr(row_hash,1,12) FROM audit'
+wal
+  1  allow  read_file  tool_rules.read_file  6d26b57dcfb7
+  2  allow  write_file  tool_rules.write_file  ceb2778f2dff
+  3  deny  read_file  deny_paths  023bbe619c80
+  4  deny  read_file  deny_paths  0a443ec27403
+  5  deny  read_file  deny_paths  3efc778ab016
+  6  deny  write_file  tool_rules.write_file.within  70ffa8a37b80
+  7  deny  delete_file  tool_rules.delete_file  a01ad9a78971
+  8  deny  move_file  tool_rules.move_file  1bb4640f475a
+  9  deny  exec_shell  default_effect  f9f389e901df
+  10  deny  write_file  tool_rules.write_file.within  c392a95611a7
+  11  deny  read_file  malformed  6a3f5fda100e
+
+$ python3 aegis/verify.py
+OK: 11 row(s) verified, chain intact
+db:   /Users/adarsh/Library/Application Support/Aegis/audit.db
+head: 6a3f5fda100e44a66e68ca3f8b423a8c5998561882ec84f9d36932ccee94958f
+note: record the head hash externally and re-check with --expect-head to detect truncation of the newest rows.
+exit=0
