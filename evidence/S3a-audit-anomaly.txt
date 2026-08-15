@@ -1,0 +1,64 @@
+# Aegis — audit chain anomaly on the shared real-path database
+# recorded: Sat Aug 15 07:32:31 IST 2026   host: macOS 26.5.1, Python 3.14.3
+
+## What the verifier says
+FAIL: audit chain broken at row id 6
+  id sequence gap: expected id 5, found 6 (1 row(s) deleted or reordered)
+  4 row(s) verified before this point
+exit=1
+
+## File identity
+file=/Users/adarsh/Library/Application Support/Aegis/audit.db
+birth time=Aug 14 23:56:30 2026
+mtime=Aug 15 07:27:53 2026
+inode=11699515
+size=24576
+mode=-rw-------
+
+## Row ids present
+count: 35
+ids:   [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+missing: [5]
+sqlite_sequence: [('audit', 36)]
+
+batches by timestamp:
+  batch starts id=1 at 2026-08-14 23:56:30.157490
+  batch starts id=12 at 2026-08-15 07:27:53.600466
+
+S2-evidence head hash still present: False
+S3a segment (ids 12-36) internally linked: True
+row 12 chains onto row 11: True
+
+## Can audit.py itself skip an id? (the question that matters)
+60 sequential open/record/close sessions x 11 rows:
+  rows=660 contiguous=True        (captured this session)
+8 concurrent processes x 40 rows on one db:
+  rows=280 contiguous=True, verify exit=0, 1 of 8 processes failed closed
+  at open() with 'database is locked' and wrote nothing.
+
+## Most likely explanation (unconfirmed)
+
+  $ git log --oneline -1
+  2ed1d35 S2: hash-chained audit + offline verifier — tamper, gap,
+          truncation-vs-anchor, standalone all verified manually
+
+Verifying "gap" detection by hand means deleting a row from a database. The
+file birth time (23:56:30) falls between the S2 evidence run (23:43) and the
+S3a run, i.e. in the window where that manual session took place. If the
+manual check ran against the default-path database rather than a copy, it
+accounts for the replaced file and the missing row 5 exactly.
+
+Needs confirmation from the operator. If confirmed: expected behaviour, and
+the lesson is that manual tamper testing must not share a file with the live
+audit trail. If not confirmed: treat the database as compromised.
+
+## RESOLVED — 2026-08-15, confirmed by the operator
+
+Confirmed as a manual gap-detection test run against the default-path database
+instead of a copy. Not a defect, not a compromise.
+
+Actions taken:
+  - default-path audit.db reset; previous file retained alongside it as
+    audit.db.pre-reset-20260815-073954, still failing verification
+  - operating rule written into S2-REPORT.md: destructive verification uses a
+    copy; the live audit database is never the subject of an experiment

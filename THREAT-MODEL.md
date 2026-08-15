@@ -108,8 +108,10 @@ Out of scope (see §7), but stated so the boundary is explicit.
 | C1 | Deterministic path allow/deny on every `tools/call` | T1, T2, T3 | S1 | UNVERIFIED |
 | C2 | Default-deny: unmatched action → ASK, never ALLOW | T1, T2 | S1 | UNVERIFIED |
 | C3 | Hash-chained append-only audit log + verifier CLI | A6, all | S2 | VERIFIED (harness, macOS) — S2-REPORT.md |
-| C4 | TLS-terminating egress proxy, domain allowlist | T2, T3, T4 | S3 | UNVERIFIED |
-| C5 | DLP scan of outbound request bodies (key/PII patterns) | A1, A2 | S3 | UNVERIFIED |
+| C4 | TLS-terminating egress proxy, domain allowlist | T2, T3, T4 | S3 | UNVERIFIED — not built |
+| C4a | MCP-layer destination allowlist + SSRF rejection (no TLS inspection) | T2, T3 | S3a | VERIFIED (harness, macOS) — S3a-REPORT.md |
+| C5 | DLP scan of outbound request bodies (key/PII patterns) | A1, A2 | S3 | UNVERIFIED — no request bodies at the MCP layer |
+| C5a | Secret scan of tool arguments, pattern name recorded but never the value | A1, A2 | S3a | VERIFIED (harness, macOS) — S3a-REPORT.md |
 | C6 | Credential broker — secret never enters agent context | A1, T2 | S4 | UNVERIFIED |
 | C7 | Blocking human approval, timeout-to-deny | A4, A5 | S5 | UNVERIFIED |
 | C8 | Bulk-operation threshold (N files → forced approval) | T1 | S5 | UNVERIFIED |
@@ -130,6 +132,7 @@ Anthropic open-sourced its sandboxing implementation (Seatbelt/bubblewrap). Reim
 
 **D3 — Hostname-based egress filtering is insufficient.**
 Filtering on the client-supplied hostname without inspecting TLS can be defeated by domain fronting. C4 therefore requires terminating TLS with a local CA installed inside the sandbox. This is the hardest engineering in the v0 and should be assumed to take longer than estimated.
+*S3a note:* C4a checks a hostname read out of a tool argument. By this decision it is a partial control and can never be described as C4, however well it tests.
 
 **D4 — Approval budget is a security property.**
 Target: fewer than 5 approval prompts per hour of agent work. Above that, T5 (approval fatigue) defeats C7. If a sprint increases prompt frequency, that is a regression.

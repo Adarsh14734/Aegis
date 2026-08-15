@@ -1,0 +1,135 @@
+# Aegis S3a — unit harness (tests/s3a.py)
+# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 07:33:28 IST 2026
+
+
+==============================================================================
+1. DLP FALSE POSITIVES — none of this ordinary content may match
+==============================================================================
+  pass  benign: git sha in a comment
+  pass  benign: 40-char base64 with no context word
+  pass  benign: the words secret and key, no value
+  pass  benign: ordinary key iteration
+  pass  benign: keyring lookup
+  pass  benign: npm lockfile integrity hash
+  pass  benign: uuid
+  pass  benign: identifiers that merely contain sk-
+  pass  benign: public key header, not private
+  pass  benign: certificate header
+  pass  benign: bearer token that is not a jwt
+  pass  benign: stripe test keys
+  pass  benign: a base64 image blob field name
+  pass  benign: prose about tokens
+
+==============================================================================
+2. DLP TRUE POSITIVES — every one of these must be caught
+==============================================================================
+  pass  secret: aws_access_key_id
+  pass  secret: aws_access_key_id
+  pass  secret: aws_secret_access_key
+  pass  secret: github_token
+  pass  secret: github_fine_grained_token
+  pass  secret: anthropic_api_key
+  pass  secret: openai_api_key
+  pass  secret: slack_token
+  pass  secret: stripe_secret_key
+  pass  secret: stripe_publishable_key
+  pass  secret: private_key_pem
+  pass  secret: private_key_pem
+  pass  secret: jwt
+  pass  the Finding never carries the matched value
+
+==============================================================================
+3. URL EXTRACTION
+==============================================================================
+  pass  extract 1: plain https
+  pass  extract 1: url in prose with trailing period
+  pass  extract 2: two urls in one string
+  pass  extract 1: file scheme
+  pass  extract 1: gopher scheme
+  pass  extract 1: data url
+  pass  extract 0: no scheme is not a url
+  pass  extract 0: colon in prose is not a url
+  pass  extract 0: compact json is not a data url
+  pass  extract 0: yaml mapping is not a data url
+  pass  extract 0: windows path is not a url
+  pass  urls found at depth 3 and depth 4
+  pass  argument path is reported
+
+==============================================================================
+4. HOST POLICY / SSRF — allowlist is ['example.com', 'api.example.com']
+==============================================================================
+  pass  allow https://example.com/x  (exact match)
+  pass  allow https://EXAMPLE.COM/x  (uppercase host)
+  pass  allow https://example.com./x  (trailing dot)
+  pass  allow https://cdn.example.com/x  (subdomain)
+  pass  allow https://a.b.c.example.com/x  (deep subdomain)
+  pass  deny  https://notexample.com/x  (suffix without dot must not match)
+  pass  deny  https://example.com.evil.xyz/x  (allowed host as a prefix label)
+  pass  deny  https://evil.xyz/x  (unlisted)
+  pass  deny  https://api.example.com@evil.xyz/x  (userinfo trick)
+  pass  deny  http://127.0.0.1/x  (loopback)
+  pass  deny  http://[::1]/x  (ipv6 loopback)
+  pass  deny  http://[::ffff:127.0.0.1]/x  (ipv4-mapped ipv6 loopback)
+  pass  deny  http://2130706433/x  (loopback as decimal integer)
+  pass  deny  http://0x7f000001/x  (loopback as hex integer)
+  pass  deny  http://127.1/x  (abbreviated loopback)
+  pass  deny  http://010.010.010.010/x  (octal dotted quad)
+  pass  deny  http://169.254.169.254/latest/meta-data/  (cloud metadata)
+  pass  deny  http://192.168.1.1/x  (private)
+  pass  deny  http://10.0.0.1/x  (private)
+  pass  deny  http://172.16.0.1/x  (private)
+  pass  deny  http://93.184.216.34/x  (public raw IP literal)
+  pass  deny  http://localhost:8080/x  (localhost)
+  pass  deny  http://api.localhost/x  (.localhost)
+  pass  deny  http://nas.local/x  (.local mDNS)
+  pass  deny  http://metadata.google.internal/x  (unlisted internal name)
+  pass  deny  file:///etc/passwd  (file scheme)
+  pass  deny  gopher://evil.xyz:70/1  (gopher scheme)
+  pass  deny  data:text/html;base64,PHNjcmlwdD4=  (data url)
+  pass  deny  ftp://example.com/x  (ftp to an allowed host is still not http)
+  pass  deny  ws://example.com/x  (websocket scheme)
+  pass  an explicitly listed loopback address is permitted
+  pass  empty allowlist denies everything
+
+==============================================================================
+5. allowed_domains VALIDATION
+==============================================================================
+  pass  absent key means the empty list, not permissive
+  pass  explicit empty list
+  pass  entries are normalized
+  pass  rejects bare wildcard: allowed_domains may not contain '*' (allow-all)
+  pass  rejects wildcard prefix: allowed_domains entry '*.example.com': wildcards are not sup
+  pass  rejects empty entry: allowed_domains contains an empty entry
+  pass  rejects scheme: allowed_domains entry 'https://example.com' must be a bare h
+  pass  rejects path: allowed_domains entry 'example.com/path' must be a bare host
+  pass  rejects port: allowed_domains entry 'example.com:443' must not carry a por
+  pass  rejects non-string: allowed_domains entry 123 is not a string
+  pass  rejects not a list: allowed_domains must be a list
+  pass  bare IPv6 literals are not mistaken for ports
+
+==============================================================================
+6. DISCLOSURE — the secret must not reach the audit db, stderr, or the frame
+==============================================================================
+  pass  both calls denied
+  pass  pattern names are reported
+  pass  AWS key absent from denial frames (stdout)
+  pass  JWT absent from denial frames (stdout)
+  pass  JWT signature fragment absent from denial frames (stdout)
+  pass  AWS key absent from proxy stderr
+  pass  JWT absent from proxy stderr
+  pass  JWT signature fragment absent from proxy stderr
+  pass  AWS key absent from audit db audit.db
+  pass  JWT absent from audit db audit.db
+  pass  JWT signature fragment absent from audit db audit.db
+
+  audit rows written:
+    (1, 'deny', 'dlp', "argument arguments.content contains a value matching secret pattern 'aws_access_key_id'; the value is deliberately not recorded", '["/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s3a-u0tjpjfa/workspace/a.sh"]')
+    (2, 'deny', 'dlp', "argument arguments.content contains a value matching secret pattern 'jwt'; the value is deliberately not recorded", '["/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s3a-u0tjpjfa/workspace/b.txt"]')
+  pass  rule_id 'dlp' recorded
+  pass  secret absent from the audit rows
+  pass  S2 chain still verifies over S3a rows
+
+==============================================================================
+SUMMARY
+==============================================================================
+  99 passed, 0 failed

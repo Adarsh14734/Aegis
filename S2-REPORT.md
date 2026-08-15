@@ -128,6 +128,49 @@ cases one-for-one, including `rule_id` — the chain records *why*, not just
 
 ---
 
+## Operating rule: destructive verification uses a copy, never the live log
+
+**Tampering tests are run against a copy. The live audit database is never the
+subject of an experiment.** `tests/tamper.py` already works this way — it builds
+its own database in a temp directory and attacks `shutil.copy` clones of it —
+but the rule exists because manual checks are where it gets broken.
+
+It got broken here. During manual verification of gap detection after S2 was
+committed, a row was deleted from the database at the *default path* rather than
+from a copy. The next sprint's verifier run reported the chain broken at row 5,
+and the resulting investigation — file birth times, `sqlite_sequence`, 1,065
+rows written across sequential, concurrent and proxy-driven runs to prove
+`audit.py` cannot skip an id — cost far more than the original test. Full
+reconstruction in `S3a-REPORT.md` finding 3 and
+`evidence/S3a-audit-anomaly.txt`.
+
+Two things this cost, both worth naming:
+
+1. **A deliberately broken log is indistinguishable from an attacked one.**
+   That is not a flaw in the chain; it is the chain working. But it means every
+   hand-tamper against the live database burns the log's value as evidence from
+   that point on. The database had to be reset, which is itself the loss the
+   control exists to prevent.
+2. **Rebuilding the log resets the id sequence to 1**, so a replaced database
+   and an original one look alike unless the head hash was anchored somewhere
+   beforehand. This is gap #2 below, arriving in practice within a day of being
+   written down.
+
+The rule, concretely:
+
+- experiment on `cp audit.db /tmp/scratch.db`, or on a database created with
+  `AEGIS_AUDIT_DB=/tmp/scratch.db`
+- if the live database is ever tampered with, reset it rather than leave a
+  known-broken chain in place, and archive the old file rather than deleting it
+- record the new head hash externally after the first real session, or the
+  reset is indistinguishable from an attack the next time someone looks
+
+The default-path database was reset on 2026-08-15. The previous file is kept
+alongside it as `audit.db.pre-reset-20260815-073954`; it still fails
+verification, which is the correct and permanent record of what happened to it.
+
+---
+
 ## The verifier is deliberately independent
 
 S0 open question #4: *"Does the audit verifier run offline, without the
@@ -212,6 +255,19 @@ the chain and confirm the model's attempts appear as rows with the right
 
 ```bash
 python3 tests/tamper.py          # self-contained; temp dir; touches nothing of yours
-python3 aegis/verify.py          # verify the real store
+```
+
+```bash
+python3 aegis/verify.py          # verify the real store, read-only
+```
+
+```bash
 python3 aegis/verify.py --expect-head <hash-you-wrote-down-earlier>
+```
+
+Poking at the chain by hand — deleting a row, editing a field — is done on a
+copy, per the operating rule above:
+
+```bash
+cp ~/Library/Application\ Support/Aegis/audit.db /tmp/scratch.db && sqlite3 /tmp/scratch.db 'DELETE FROM audit WHERE id=5' && python3 aegis/verify.py /tmp/scratch.db
 ```

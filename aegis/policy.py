@@ -1,6 +1,8 @@
-"""Deterministic policy engine for Aegis S1.
+"""Deterministic policy engine for Aegis.
 
-Implements controls C1 (path allow/deny per tools/call) and C2 (default-deny).
+S1: controls C1 (path allow/deny per tools/call) and C2 (default-deny).
+S3a: partial C4 (egress domain allowlist) and partial C5 (outbound secret
+scan), delegated to egress.py and dlp.py but sequenced here.
 
 Design constraints from THREAT-MODEL.md:
   - B1: nothing on the agent side is trusted, including tool arguments.
@@ -15,6 +17,9 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+import dlp
+import egress
 
 
 class Effect(str, Enum):
@@ -99,6 +104,8 @@ class Policy:
         if not isinstance(self.deny_paths, tuple):
             raise PolicyError("deny_paths must be a list")
 
+        self.allowed_domains = self._load_allowed_domains(doc)
+
         rules = doc.get("tool_rules") or {}
         if not isinstance(rules, dict):
             raise PolicyError("tool_rules must be an object")
@@ -122,6 +129,52 @@ class Policy:
             raise PolicyError("ask_behavior may not be 'allow' before S5")
 
         self._assert_policy_file_unreachable()
+
+    @staticmethod
+    def _load_allowed_domains(doc: dict) -> tuple[str, ...]:
+        """S3a: a missing key is the empty list, and the empty list denies every
+        URL. Absence must never mean permissive — the same rule as C2.
+
+        Entries are bare hostnames. Subdomains are implied, so '*.example.com'
+        is rejected rather than silently reinterpreted, and a bare '*' is
+        rejected outright for the same reason `default_effect: allow` is: a
+        policy that permits everything is a misconfiguration severe enough to
+        refuse to start over.
+        """
+        raw = doc.get("allowed_domains")
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            raise PolicyError("allowed_domains must be a list")
+
+        out: list[str] = []
+        for entry in raw:
+            if not isinstance(entry, str):
+                raise PolicyError(f"allowed_domains entry {entry!r} is not a string")
+            value = egress.normalize_domain(entry)
+            if not value:
+                raise PolicyError("allowed_domains contains an empty entry")
+            if value == "*":
+                raise PolicyError("allowed_domains may not contain '*' (allow-all)")
+            if value.startswith("*."):
+                raise PolicyError(
+                    f"allowed_domains entry {entry!r}: wildcards are not supported; "
+                    f"write {value[2:]!r}, which already covers its subdomains"
+                )
+            if "/" in value:
+                raise PolicyError(
+                    f"allowed_domains entry {entry!r} must be a bare host, "
+                    f"without scheme or path"
+                )
+            head, sep, tail = value.rpartition(":")
+            if sep and tail.isdigit() and egress.parse_ip_literal(value) is None:
+                # ...but ':' inside a bare IPv6 literal is not a port.
+                raise PolicyError(
+                    f"allowed_domains entry {entry!r} must not carry a port; "
+                    f"ports are not part of the host check"
+                )
+            out.append(value)
+        return tuple(out)
 
     def _assert_policy_file_unreachable(self) -> None:
         """S0 decision #2: the agent must not be able to write the policy file.
@@ -166,8 +219,16 @@ class Policy:
         return found
 
     def evaluate(self, tool: str, arguments: dict, cwd: Path) -> Decision:
-        """Return a Decision. Order is fixed and deny always wins."""
-        raw_paths = self.extract_paths(arguments if isinstance(arguments, dict) else {})
+        """Return a Decision. Order is fixed and deny always wins.
+
+        deny_paths -> DLP -> egress -> tool rule -> containment -> default.
+
+        DLP and egress sit above the tool rule for the same reason deny_paths
+        does: they must be unreachable by any allow rule. A tool being allowed
+        says the *operation* is permitted, never that the *content* is.
+        """
+        args = arguments if isinstance(arguments, dict) else {}
+        raw_paths = self.extract_paths(args)
         resolved = [safe_resolve(p, cwd) for p in raw_paths]
         shown = tuple(str(p) for p in resolved)
 
@@ -183,7 +244,39 @@ class Policy:
                         shown,
                     )
 
-        # 2. Tool must be named in policy. Unknown tool -> default (never allow).
+        # One traversal feeds both content controls, so they cannot disagree
+        # about what the arguments contained. An argument tree too large to
+        # scan completely is denied rather than partially scanned.
+        try:
+            strings = egress.walk_strings(args)
+        except egress.ScanLimitExceeded as exc:
+            return Decision(
+                Effect.DENY,
+                f"arguments could not be scanned completely ({exc}); failing closed",
+                "scan_limit",
+                tool,
+                shown,
+            )
+
+        # 2. Secrets in arguments (C5, partial). Pattern name only — the value
+        # is never carried into the Decision, which is written to the audit db
+        # and shown to the model.
+        secret = dlp.scan(strings)
+        if secret is not None:
+            return Decision(Effect.DENY, secret.reason(), "dlp", tool, shown)
+
+        # 3. Egress destinations (C4, partial). Deny-by-default allowlist.
+        url = egress.check(strings, self.allowed_domains)
+        if url is not None:
+            return Decision(
+                Effect.DENY,
+                f"URL {url.scheme}://{url.host} in {url.where}: {url.reason}",
+                "egress_domain",
+                tool,
+                shown,
+            )
+
+        # 4. Tool must be named in policy. Unknown tool -> default (never allow).
         rule = self.tool_rules.get(tool)
         if rule is None:
             return self._default(tool, shown, f"tool {tool!r} not present in tool_rules")
@@ -192,7 +285,7 @@ class Policy:
         if effect is Effect.DENY:
             return Decision(Effect.DENY, "tool is denied by policy", f"tool_rules.{tool}", tool, shown)
 
-        # 3. Containment. Every path in the call must sit inside an allowed root.
+        # 5. Containment. Every path in the call must sit inside an allowed root.
         if resolved:
             allowed_roots = self._roots_for(rule)
             for p in resolved:
