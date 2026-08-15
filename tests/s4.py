@@ -44,6 +44,7 @@ SECRET = "ghp_s4fixture000000000000000000000000ABCD"
 SECRET2 = 'tricky"value\\with\\escapes'   # forces the JSON-escaped redaction path
 
 passed = failed = 0
+unverified: list[str] = []
 
 
 def check(ok: bool, label: str, detail: str = "") -> None:
@@ -54,6 +55,42 @@ def check(ok: bool, label: str, detail: str = "") -> None:
     else:
         failed += 1
         print(f"  FAIL  {label}{('  <- ' + detail) if detail else ''}")
+
+
+def mark_unverified(what: str, why: str, remedy: str = "") -> None:
+    """Record a claim this run did NOT establish.
+
+    A skipped test that reads as green is worse than a failing one: it puts a
+    tick next to something nobody checked. Anything recorded here is printed
+    in the summary and makes the suite exit non-zero, so an unverified path
+    cannot be mistaken for a verified one by looking at the exit code.
+    """
+    unverified.append(what)
+    print(f"  NOT RUN  {what}")
+    print(f"           why: {why}")
+    if remedy:
+        print(f"           to run it: {remedy}")
+
+
+def run_child(argv, env, label: str):
+    """Run a child process and, on failure, print everything needed to debug it.
+
+    The previous version of this harness truncated the child's stderr to 160
+    characters, which cut it off *above* the exception line — so the one thing
+    a reader needed was the one thing removed. Print the command, the exit
+    code, and both streams in full.
+    """
+    proc = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=120)
+    if proc.returncode != 0:
+        print(f"  child failed: {label}")
+        print(f"    command : {' '.join(str(a) for a in argv)}")
+        print(f"    exit    : {proc.returncode}")
+        for stream, name in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
+            if stream.strip():
+                print(f"    {name}  :")
+                for ln in stream.strip().splitlines():
+                    print(f"      | {ln}")
+    return proc
 
 
 def rule(title: str) -> None:
@@ -331,56 +368,151 @@ check(r.scrub(f"failed: {SECRET} rejected") == "failed: [AEGIS-REDACTED] rejecte
       "Redactor.scrub removes the value from arbitrary text")
 
 
-# ---- 7. the real keyring library -----------------------------------------
+# ---- 7. the real keyring library and the real OS keychain -----------------
 
-rule("7. THE REAL keyring LIBRARY (not the test fixture)")
+rule("7. THE REAL keyring LIBRARY AND THE REAL OS KEYCHAIN")
 
-real = shutil.which("python3")
-probe = subprocess.run(
-    [sys.executable, "-c", "import keyring; print('yes')"],
-    capture_output=True, text=True,
-    env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+# Sections 1-6 ran against tests/fixtures/keyring.py. Everything below is about
+# how much of the *production* path that leaves unproven. Three distinct
+# claims, verified separately, because conflating them is how a report ends up
+# overstating its evidence:
+#
+#   7a  the real library loads and broker's read path works through it
+#   7b  the real library end to end, against an isolated file backend
+#   7c  the real OS keychain write path
+#
+# Only 7a and 7b are automatable here. 7c is not, for a specific and checkable
+# reason recorded below.
+
+NO_FIXTURE_ENV = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+probe = run_child(
+    [sys.executable, "-c",
+     "import keyring, keyring.backends.macOS as m;"
+     "kr = keyring.get_keyring();"
+     "print(type(kr).__module__, isinstance(kr, m.Keyring))"],
+    NO_FIXTURE_ENV, "import the real keyring library",
 )
-if probe.returncode != 0:
-    print("  SKIP  the real 'keyring' library is not installed for "
-          f"{sys.executable}.")
-    print("        Sections 1-6 used tests/fixtures/keyring.py. To exercise the")
-    print("        real library:  pip install keyring keyrings.alt")
-    print("        S4-REPORT.md records this as a gap, not as a pass.")
+has_keyring = probe.returncode == 0
+backend_line = probe.stdout.strip()
+is_macos_backend = backend_line.endswith("True")
+print(f"  real keyring available: {has_keyring}   default backend: {backend_line or 'n/a'}")
+
+# --- 7a: broker's read path, through the real library, writing nothing -----
+if not has_keyring:
+    mark_unverified(
+        "7a: broker read path against the real keyring library",
+        "the 'keyring' library is not importable for this interpreter",
+        f"pip install keyring, then rerun with {sys.executable}",
+    )
+else:
+    reader = run_child(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]);"
+         "import broker;"
+         "print('exists:', broker.secret_exists('aegis_s4_absent_probe'));"
+         "\ntry:\n"
+         "    broker.get_secret('aegis_s4_absent_probe')\n"
+         "except broker.BrokerError as e:\n"
+         "    print('raised:', type(e).__name__);"
+         "    print('chained:', e.__cause__ is not None or e.__context__ is not None);"
+         "    print('msg:', e)\n",
+         str(ROOT / "aegis")],
+        NO_FIXTURE_ENV, "broker read path via real keyring",
+    )
+    out = reader.stdout
+    check(reader.returncode == 0, "7a real library: broker imports and runs", out[:200])
+    check("exists: False" in out, "7a real library: a missing handle reports absent", out[:200])
+    check("raised: BrokerError" in out,
+          "7a real library: a missing secret raises BrokerError", out[:200])
+    check("chained: False" in out,
+          "7a real library: no exception is chained onto it", out[:200])
+    check("no secret is stored" in out,
+          "7a real library: the message names the handle, not a value", out[:200])
+    if is_macos_backend:
+        check(True, "7a real library: the backend in use is the macOS Keychain")
+
+# --- 7b: end to end against an isolated file backend ----------------------
+alt = run_child([sys.executable, "-c", "import keyrings.alt.file"],
+                NO_FIXTURE_ENV, "import keyrings.alt")
+if not has_keyring or alt.returncode != 0:
+    mark_unverified(
+        "7b: end-to-end substitution against the real keyring library",
+        "keyrings.alt is not installed, and it is the only way to give the real "
+        "library a writable backend that is not your login keychain",
+        f"{sys.executable} -m pip install keyrings.alt",
+    )
 else:
     kr_home = LAB / "kr"
     kr_home.mkdir()
-    real_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-    real_env.update({
+    real_env = {
+        **NO_FIXTURE_ENV,
         "AEGIS_POLICY": str(POLICY),
         "XDG_DATA_HOME": str(kr_home),
         "PYTHON_KEYRING_BACKEND": "keyrings.alt.file.PlaintextKeyring",
-    })
-    seed = subprocess.run(
+    }
+    seed = run_child(
         [sys.executable, "-c",
          "import keyring, sys; keyring.set_password('aegis','github_token', sys.argv[1])",
          SECRET],
-        capture_output=True, text=True, env=real_env,
+        real_env, "seed the isolated file backend",
     )
     if seed.returncode != 0:
-        print(f"  SKIP  could not seed a temporary backend: {seed.stderr.strip()[:160]}")
+        mark_unverified(
+            "7b: end-to-end substitution against the real keyring library",
+            "seeding the isolated backend failed; the child's output is above",
+            "fix the cause shown above and rerun",
+        )
     else:
         pr, dbr = run_proxy([
             ("fetch", {"url": GH, "headers": ["token ${aegis:github_token}"],
                        "echo_mode": "text"}),
         ], real_env)
-        check('"isError": false' in pr.stdout or "ECHO" in pr.stdout,
-              "real keyring: the call was forwarded", pr.stdout[:160])
+        check("ECHO" in pr.stdout, "7b real library: the call was forwarded",
+              pr.stdout[:160])
         check("[AEGIS-REDACTED:github_token]" in pr.stdout,
-              "real keyring: the echoed value came back redacted", pr.stdout[:160])
+              "7b real library: the echoed value came back redacted", pr.stdout[:160])
         check(SECRET not in pr.stdout and SECRET not in pr.stderr,
-              "real keyring: no disclosure to the client")
+              "7b real library: no disclosure to the client")
         check(SECRET not in Path(str(dbr)).read_bytes().decode("latin-1"),
-              "real keyring: no disclosure to the audit db")
+              "7b real library: no disclosure to the audit db")
+        print("  note: this used keyrings.alt.file.PlaintextKeyring — a plaintext")
+        print("        FILE, not the OS keychain. It proves the library wiring,")
+        print("        not the keychain integration. See 7c.")
+
+# --- 7c: the real OS keychain write path ----------------------------------
+# Not automatable without violating the standing constraint that this suite
+# must never write to the real login keychain. The reason is specific and was
+# read out of the installed library rather than assumed:
+#
+#   keyring.backends.macOS.Keyring accepts a keychain path (attribute
+#   `keychain`, settable via KEYCHAIN_PATH) but ignores it. Its own
+#   @warn_keychain decorator says so: "Specified keychain is ignored. See
+#   #623". api.set_generic_password() takes the keychain name as its first
+#   argument, never references it, and calls SecItemAdd() with no
+#   kSecUseKeychain — SecKeychainOpen does not appear in the module at all.
+#   Every write therefore lands in the user's default (login) keychain.
+#
+# So on macOS with keyring 25.7.0 there is no isolated keychain to write to.
+# The write path is left UNVERIFIED rather than tested against the developer's
+# real credential store.
+mark_unverified(
+    "7c: the real OS keychain WRITE path (aegis-secret set -> substitution)",
+    "keyring 25.7.0 ignores KEYCHAIN_PATH (upstream #623) and SecItemAdd targets "
+    "the default keychain, so an automated write would land in your login "
+    "keychain, which this suite must never touch",
+    "run tests/manual/keychain-check.md by hand, or wait for a keyring release "
+    "that honours the keychain path",
+)
 
 
 shutil.rmtree(LAB, ignore_errors=True)
 
 rule("SUMMARY")
-print(f"  {passed} passed, {failed} failed")
-sys.exit(1 if failed else 0)
+print(f"  {passed} passed, {failed} failed, {len(unverified)} NOT RUN")
+if unverified:
+    print("\n  These claims were NOT established by this run:")
+    for item in unverified:
+        print(f"    - {item}")
+    print("\n  The suite exits non-zero because of them. A skipped check that")
+    print("  reads as green puts a tick next to something nobody verified.")
+sys.exit(1 if (failed or unverified) else 0)

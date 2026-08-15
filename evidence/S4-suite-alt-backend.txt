@@ -1,6 +1,9 @@
-# Aegis S4 — the same suite on the system interpreter (no keyring installed)
-# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 13:37:20 IST 2026
-# Section 7 SKIPs here. Recorded so the gap is visible rather than implied.
+# Aegis S4 — same suite on an interpreter that also has keyrings.alt
+# host: macOS 26.5.1, Sat Aug 15 14:12:37 IST 2026
+# interpreter: a throwaway venv, Python 3.14.3
+# This run additionally covers 7b (real keyring library against an
+# isolated PLAINTEXT FILE backend). It still does NOT cover 7c, the OS
+# keychain write path, which no interpreter can cover automatically.
 
 
 ==============================================================================
@@ -91,14 +94,34 @@
   pass  Redactor.scrub removes the value from arbitrary text
 
 ==============================================================================
-7. THE REAL keyring LIBRARY (not the test fixture)
+7. THE REAL keyring LIBRARY AND THE REAL OS KEYCHAIN
 ==============================================================================
-  SKIP  the real 'keyring' library is not installed for /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.
-        Sections 1-6 used tests/fixtures/keyring.py. To exercise the
-        real library:  pip install keyring keyrings.alt
-        S4-REPORT.md records this as a gap, not as a pass.
+  real keyring available: True   default backend: keyring.backends.chainer False
+  pass  7a real library: broker imports and runs
+  pass  7a real library: a missing handle reports absent
+  pass  7a real library: a missing secret raises BrokerError
+  pass  7a real library: no exception is chained onto it
+  pass  7a real library: the message names the handle, not a value
+  pass  7b real library: the call was forwarded
+  pass  7b real library: the echoed value came back redacted
+  pass  7b real library: no disclosure to the client
+  pass  7b real library: no disclosure to the audit db
+  note: this used keyrings.alt.file.PlaintextKeyring — a plaintext
+        FILE, not the OS keychain. It proves the library wiring,
+        not the keychain integration. See 7c.
+  NOT RUN  7c: the real OS keychain WRITE path (aegis-secret set -> substitution)
+           why: keyring 25.7.0 ignores KEYCHAIN_PATH (upstream #623) and SecItemAdd targets the default keychain, so an automated write would land in your login keychain, which this suite must never touch
+           to run it: run tests/manual/keychain-check.md by hand, or wait for a keyring release that honours the keychain path
 
 ==============================================================================
 SUMMARY
 ==============================================================================
-  59 passed, 0 failed
+  68 passed, 0 failed, 1 NOT RUN
+
+  These claims were NOT established by this run:
+    - 7c: the real OS keychain WRITE path (aegis-secret set -> substitution)
+
+  The suite exits non-zero because of them. A skipped check that
+  reads as green puts a tick next to something nobody verified.
+
+# suite exit code: 0

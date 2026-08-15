@@ -3,8 +3,20 @@
 **Sprint:** S4
 **Date:** 2026-08-15
 **Control:** C6 — credential broker, secret never enters agent context
-**Status:** **C6a VERIFIED (harness, macOS)**. C6 as written in THREAT-MODEL.md
-is **not** met and is not claimed. See §What this is not.
+**Status:** **C6a VERIFIED (harness, macOS) against a fake keychain only.** The
+real OS keychain path is **UNVERIFIED**. C6 as written in THREAT-MODEL.md is
+not met and is not claimed. See §What this is not and §Control status.
+
+> **Correction, 2026-08-15.** An earlier revision of this report headlined
+> "63/63 with the real keyring library". That figure was real but was presented
+> in a way that overstated it, in two ways that matter. It came from a
+> throwaway venv rather than this machine's interpreter, so it was not
+> reproducible by the reader. And decisively, the backend under that run was
+> `keyrings.alt.file.PlaintextKeyring` — a plaintext **file** — so the OS
+> keychain was never exercised, while the report's summary sat next to the
+> claim that "secrets live in the OS keychain". The keychain integration was
+> never verified by any run, and the table below now says so. The true counts
+> are in §Verification.
 
 ---
 
@@ -20,8 +32,9 @@ is **not** met and is not claimed. See §What this is not.
 | `tests/s4.py` | 63 cases |
 | `tests/fixtures/keyring.py` | Fake keyring so the suite never touches a real keychain |
 | `tests/echo_server.py` | A server that reflects its arguments — the case redaction exists for |
-| `evidence/S4-suite.txt` | Raw output, **real** keyring library, 63/63 |
-| `evidence/S4-suite-no-keyring.txt` | Same suite without the library, 59/59, §7 skipped |
+| `tests/manual/keychain-check.md` | By-hand procedure for the one path that cannot be automated |
+| `evidence/S4-suite.txt` | Raw output on this machine's interpreter: 65 passed, 0 failed, **2 NOT RUN**, exit 1 |
+| `evidence/S4-suite-alt-backend.txt` | Same suite where §7b can also run: 68 passed, 0 failed, **1 NOT RUN**, exit 1 |
 
 The model writes `${aegis:github_token}`. Aegis substitutes the real value
 after the policy chain returns ALLOW and immediately before the frame reaches
@@ -153,31 +166,78 @@ that wants the value.
 
 ## Verification
 
-| Suite | Result |
-|---|---|
-| `tests/s4.py`, real `keyring` 25.7.0 | **63/63** — `evidence/S4-suite.txt` |
-| `tests/s4.py`, no keyring installed | 59/59, §7 skipped — `evidence/S4-suite-no-keyring.txt` |
-| `tests/s3b.py` | 60/60, unchanged |
-| `tests/s3a.py` | 99/99, unchanged |
-| `tests/tamper.py` | 10/10, unchanged |
-| `tests/drive.py` | 6 allowed / 21 denied, unchanged |
+| Suite | Result | Exit |
+|---|---|---|
+| `tests/s4.py` on `python3` 3.14.3, keyring 25.7.0 | **65 passed, 0 failed, 2 NOT RUN** | 1 |
+| `tests/s4.py` where §7b can also run | **68 passed, 0 failed, 1 NOT RUN** | 1 |
+| `tests/s3b.py` | 60/60 | 0 |
+| `tests/s3a.py` | 99/99 | 0 |
+| `tests/tamper.py` | 10/10 | 0 |
+| `tests/drive.py` | 6 allowed / 21 denied | 0 |
 
-Sections 1–6 run against `tests/fixtures/keyring.py`, a fake module resolved
-ahead of the real one on `PYTHONPATH`, so the suite never touches the macOS
-login keychain — which would prompt, would persist, and would make results
-depend on the developer's machine state.
+**The S4 suite exits non-zero on this machine, and should.** Two of its claims
+are not established by any run here. It is not green and must not be reported
+as green.
 
-Because "tested only against my own fake" is the kind of claim S1 warns about,
-§7 runs the **real** `keyring` library against a temporary
-`keyrings.alt.file.PlaintextKeyring` backend in a temp directory: real library,
-real backend, real proxy, real substitution, real redaction. That is the run
-captured in `evidence/S4-suite.txt`.
+Sections 1–6 (59 checks) run against `tests/fixtures/keyring.py`, a fake module
+resolved ahead of the real one on `PYTHONPATH`, so the suite never touches the
+macOS login keychain. Section 7 exists to say how much of the production path
+that leaves unproven, split into three separately-verifiable claims:
 
-**Tier: VERIFIED (harness, macOS)** — observed on real macOS hardware against
-the real proxy, store and verifier, raw output captured, decisions driven by
-`tests/` rather than a live model session. Per S1's definition this does not
-reach unqualified VERIFIED. C6 stays UNVERIFIED; C6a is the control that was
-built and tested.
+| | Claim | Status here |
+|---|---|---|
+| 7a | The real `keyring` library loads, and `broker`'s read path works through it — backend is `keyring.backends.macOS.Keyring`, a missing handle raises a `BrokerError` naming the handle with nothing chained | **6 checks pass.** Writes nothing |
+| 7b | End-to-end substitution and redaction through the real library | **4 checks pass** on an interpreter with `keyrings.alt`; **NOT RUN** on this one. Uses a plaintext **file** backend, so it proves library wiring, not keychain integration |
+| 7c | The real OS keychain **write** path — `aegis-secret set` through to substitution | **NOT RUN, and not automatable.** See below |
+
+### Why 7c cannot be automated, and why that is not a skip
+
+`keyring.backends.macOS.Keyring` accepts a keychain path — attribute
+`keychain`, settable through `KEYCHAIN_PATH` — and ignores it. Read out of the
+installed 25.7.0 source rather than assumed:
+
+- the `@warn_keychain` decorator warns `"Specified keychain is ignored. See #623"`
+- `api.set_generic_password(name, service, username, password)` takes the
+  keychain `name` first and never references it
+- it calls `SecItemAdd(q, None)` with no `kSecUseKeychain`, and
+  `SecKeychainOpen` does not appear in the module at all
+
+Every write therefore lands in the default login keychain. There is no isolated
+keychain to point a test at, so the write path cannot be exercised without
+writing to the developer's real credential store — which this suite is
+forbidden to do. `tests/manual/keychain-check.md` is the by-hand procedure,
+with cleanup; until someone runs it, 7c stays UNVERIFIED.
+
+The suite records 7b and 7c through `mark_unverified()`, which prints them in
+the summary and forces a non-zero exit. The previous version printed `SKIP`
+inside an otherwise-passing run, which is the failure mode this whole project
+is supposed to be allergic to: a tick next to something nobody checked.
+
+---
+
+## Control status
+
+| ID | Control | Tier | Basis |
+|---|---|---|---|
+| C6 | Credential broker per B4 — broker performs the operation | **UNVERIFIED** | not built; substitution is a different design |
+| C6a | Handle substitution, model never sees the value | **VERIFIED (harness, macOS) — fake keychain only** | 59 checks against `tests/fixtures/keyring.py`, plus 6 read-path checks against the real library |
+| C6a-keychain | The OS keychain read path | **VERIFIED (harness, macOS)** | §7a: real `keyring.backends.macOS.Keyring`, miss path only, no writes |
+| C6a-keychain-write | The OS keychain write path, end to end | **UNVERIFIED** | structurally unautomatable; `tests/manual/keychain-check.md` |
+
+**What C6a actually rests on.** Every disclosure guarantee — value absent from
+the audit database, stderr, denial frames and every frame reaching the model —
+was established with a fake keychain supplying the value. Those guarantees are
+about what Aegis does with a secret *after* it has it, so the source of the
+secret does not weaken them. What is genuinely unproven is that
+`aegis-secret set` followed by a real keychain read returns the same bytes that
+were stored. That is one `security`-framework round trip, it is the most
+boring part of the system, and it is still unverified.
+
+**Tier definitions** are S1's: VERIFIED (harness, macOS) means observed on real
+macOS hardware against the real proxy, store and verifier with raw output
+captured, decisions driven by `tests/` rather than a live model session. No S4
+control reaches unqualified VERIFIED, which requires a live Claude Code session
+with the client's own log captured.
 
 **To reach VERIFIED unqualified:** a live Claude Code session where the model is
 told to use `${aegis:github_token}` against `api.github.com` and separately
@@ -189,6 +249,28 @@ gate S2, S3a and S3b are all still waiting on.
 
 ## Findings
 
+### 0. This report overstated its own evidence, and the harness helped it
+
+The first revision claimed "63/63 with the real keyring library" as the
+headline. Two separate faults produced that:
+
+- **The harness hid its own failure.** Section 7 caught a seeding error and
+  printed `seed.stderr.strip()[:160]` — 160 characters, which cut the child's
+  traceback off *above* the exception line, so the cause (`ModuleNotFoundError:
+  No module named 'keyrings'`) was invisible. It then printed `SKIP` and let
+  the run finish green with exit 0. Fixed: `run_child()` now prints the
+  command, the exit code and both streams in full, and `mark_unverified()`
+  forces a non-zero exit.
+- **I conflated "the real library" with "the real keychain."** The 63/63 run
+  used `keyrings.alt.file.PlaintextKeyring` — a plaintext file. It never
+  touched a keychain. Writing "real library, real backend" next to "secrets
+  live in the OS keychain" invited exactly the wrong conclusion.
+
+The lesson is the one S1 already recorded — *a tool reporting its own success
+is not verification* — applied to my own test harness rather than to a tool
+under test. A suite that can print `SKIP` and still exit 0 is a suite that will
+eventually launder an unverified claim into a report.
+
 ### 1. `keyring` is a new third-party dependency in the trusted computing base
 
 Every line of Aegis until now was stdlib. `keyring` pulls in a dependency chain
@@ -198,9 +280,11 @@ but it is a real widening and should be a conscious choice rather than an
 inherited one. On macOS the alternative is the `security` CLI, which is stdlib
 `subprocess` and no new dependency, at the cost of portability.
 
-It is **not installed** in your default interpreter (`python3` 3.14.3). Until it
-is, any call carrying a handle is denied with `credential_unavailable` — fail
-closed, correctly, but nothing works. `pip install keyring`.
+It is now installed in the default interpreter — `python3` 3.14.3, keyring
+25.7.0, backend `keyring.backends.macOS.Keyring` — which it was not when this
+report was first written. `keyrings.alt` is not, which is why §7b does not run
+here; `python3 -m pip install keyrings.alt` closes that one gap, though it does
+nothing for 7c.
 
 ### 2. The credential is in proxy memory for the process lifetime
 
@@ -244,16 +328,34 @@ is a file-descriptor argument, not accepting stdin.
 7. **A secret substituted into a path argument would be recorded** in the audit
    `paths` column, which is populated before substitution — so in practice it
    holds the handle, not the value. Verified for the tested shapes only.
-8. **Still reviewed by nobody but its author.** THREAT-MODEL.md §10 is empty.
+8. **The OS keychain write path has never been executed by any test.** Storing
+   via `aegis-secret set` and reading the same bytes back through the real
+   macOS backend is unverified, because it cannot be automated without writing
+   to the real login keychain (§Verification). It is the least interesting code
+   in S4 and the only part with no automated coverage at all.
+9. **`keyrings.alt` is not installed here**, so even the real-library
+   end-to-end check (§7b) does not run on this machine.
+10. **Still reviewed by nobody but its author.** THREAT-MODEL.md §10 is empty.
 
 ---
 
 ## Reproduce
 
+Expect **exit 1** with `2 NOT RUN`. That is the correct result on this machine,
+not a broken suite:
+
 ```bash
 python3 tests/s4.py
 ```
 
+Closes 7b only — 7c remains unautomatable:
+
 ```bash
-pip install keyring && ./bin/aegis-secret set github_token
+python3 -m pip install keyrings.alt && python3 tests/s4.py
+```
+
+The one path a machine cannot check for you:
+
+```bash
+open tests/manual/keychain-check.md
 ```
