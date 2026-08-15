@@ -188,8 +188,7 @@ that leaves unproven, split into three separately-verifiable claims:
 |---|---|---|
 | 7a | The real `keyring` library loads, and `broker`'s read path works through it — backend is `keyring.backends.macOS.Keyring`, a missing handle raises a `BrokerError` naming the handle with nothing chained | **6 checks pass.** Writes nothing |
 | 7b | End-to-end substitution and redaction through the real library | **4 checks pass** on an interpreter with `keyrings.alt`; **NOT RUN** on this one. Uses a plaintext **file** backend, so it proves library wiring, not keychain integration |
-| 7c | The real OS keychain **write** path — `aegis-secret set` through to substitution | **NOT RUN, and not automatable.** See below |
-
+| 7c | UNVERIFIED | VERIFIED (manual, macOS) — 2026-08-15, keyring 25.7.0, procedure in tests/manual/keychain-check.md, all four checks passed |
 ### Why 7c cannot be automated, and why that is not a skip
 
 `keyring.backends.macOS.Keyring` accepts a keychain path — attribute
