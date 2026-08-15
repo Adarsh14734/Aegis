@@ -194,6 +194,16 @@ def host_allowed(host: str, allowed: tuple[str, ...]) -> bool:
     return False
 
 
+def url_host(url: str) -> str | None:
+    """Normalized host of a URL, or None if it has none or will not parse.
+    Used by the credential broker to scope a secret to a destination."""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return None
+    return normalize_domain(host) if host else None
+
+
 def check_url(where: str, url: str, allowed: tuple[str, ...]) -> Finding | None:
     """None if this URL may be forwarded, a Finding if it may not."""
     try:

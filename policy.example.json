@@ -21,6 +21,9 @@
     "move_file":                  {"effect": "ask",   "within": ["<workspace>"]},
     "delete_file":                {"effect": "deny"}
   },
+  "credentials": {
+    "github_token": {"tools": ["fetch"], "hosts": ["api.github.com"]}
+  },
   "default_effect": "deny",
   "ask_behavior": "deny"
 }

@@ -98,6 +98,7 @@ Out of scope (see §7), but stated so the boundary is explicit.
 - **B2.** Policy decisions are made only in the control plane. The agent never sees, and cannot influence, the policy file.
 - **B3.** The trusted computing base must stay small enough to audit by hand. Every feature added to the control plane widens it.
 - **B4.** Secrets never cross the boundary in plaintext. The broker performs the operation; the agent receives a result.
+  *S4 note:* C6a keeps the value out of the **model's context** but hands it to the MCP server, which §3 names as T3. B4 as written is not met by substitution and needs Aegis to perform the request itself — that is C4. Until then, any credential granted to a tool is a credential granted to whoever wrote that tool.
 
 ---
 
@@ -112,7 +113,8 @@ Out of scope (see §7), but stated so the boundary is explicit.
 | C4a | MCP-layer destination allowlist + SSRF rejection (no TLS inspection) | T2, T3 | S3a | VERIFIED (harness, macOS) — S3a-REPORT.md |
 | C5 | DLP scan of outbound request bodies (key/PII patterns) | A1, A2 | S3 | UNVERIFIED — no request bodies at the MCP layer |
 | C5a | Secret scan of tool arguments, pattern name recorded but never the value | A1, A2 | S3a | VERIFIED (harness, macOS) — S3a-REPORT.md |
-| C6 | Credential broker — secret never enters agent context | A1, T2 | S4 | UNVERIFIED |
+| C6 | Credential broker — secret never enters agent context (B4: broker performs the operation) | A1, T2, T3 | S4 | UNVERIFIED — not built |
+| C6a | Handle substitution after policy: model never sees the value; MCP server does | A1, T2 | S4 | VERIFIED (harness, macOS) — S4-REPORT.md |
 | C7 | Blocking human approval, timeout-to-deny | A4, A5 | S5 | UNVERIFIED |
 | C8 | Bulk-operation threshold (N files → forced approval) | T1 | S5 | UNVERIFIED |
 | C9 | Soft delete to recoverable trash | T1 | S5 | UNVERIFIED |

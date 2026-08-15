@@ -1,0 +1,104 @@
+# Aegis S4 — the same suite on the system interpreter (no keyring installed)
+# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 13:37:20 IST 2026
+# Section 7 SKIPs here. Recorded so the gap is visible rather than implied.
+
+
+==============================================================================
+1. HANDLE DETECTION AND AUTHORIZATION (no keychain access)
+==============================================================================
+  pass  handle found in a nested list
+  pass  handle found three levels deep
+  pass  ordinary text is not a handle
+  pass  substitution authorized for the granted tool and host
+  pass  handle denied for a tool not in its list
+  pass  handle denied for a host not in its list
+  pass  one unlisted URL alongside a listed one still denies
+  pass  unknown handle denied
+  pass  handle with neither tools nor hosts denied
+  pass  handle with tools but no hosts denied
+  pass  handle in a call carrying no URL denied
+  pass  a call with no handle is unaffected
+  pass  egress still outranks the credential check
+  pass  deny_paths still outranks everything
+  pass  policy refuses: credentials not an object: credentials must be an object
+  pass  policy refuses: invalid handle name: credentials handle 'a b' is not a valid handle n
+  pass  policy refuses: tools not a list: credentials[t].tools must be a list of tool name
+  pass  policy refuses: wildcard tool: credentials[t].tools may not contain '*'; name t
+  pass  policy refuses: wildcard host: credentials[t].hosts may not contain '*' (allow-
+  pass  policy refuses: host with scheme: credentials[t].hosts entry 'https://x.com' must 
+  pass  policy refuses: unknown key: credentials[t] has unknown key 'scope'; only 'to
+
+==============================================================================
+2. A DENIED CALL NEVER READS THE KEYCHAIN
+==============================================================================
+  pass  all three denied
+  pass  keyring was never called for a denied call
+  pass  no secret anywhere in a denied exchange
+
+==============================================================================
+3. END-TO-END SUBSTITUTION THROUGH THE REAL PROXY
+==============================================================================
+  pass  the server received something in place of the handle
+  pass  the server did NOT receive the literal handle
+  pass  ...and what came back to the model is redacted, not the value
+  pass  the value never reaches the client stream
+  pass  a substituted call is forwarded and completes
+
+==============================================================================
+4. DISCLOSURE — byte-level check of every channel
+==============================================================================
+  pass  secret absent from stdout frames
+  pass  no fragment of it in stdout frames
+  pass  secret absent from proxy stderr
+  pass  no fragment of it in proxy stderr
+  pass  secret absent from audit db audit-1.db
+  pass  no fragment of it in audit db audit-1.db
+
+  audit rows:
+    1  allow   tool_rules.fetch       matched allow rule; substituted credential handle(s) github_token
+    2  redact  credential_redacted    server response echoed credential handle(s) github_token (1 occurrence(s)); redacted bef
+  pass  secret absent from the audit rows
+  pass  the handle NAME is recorded
+  pass  the audit says substitution occurred
+  pass  the audit records that a redaction happened
+  pass  chain still verifies
+  pass  denied calls recorded with rule_id credential_denied
+
+==============================================================================
+5. A SERVER THAT ECHOES THE CREDENTIAL BACK
+==============================================================================
+  pass  echoed credential in a normal result is redacted
+  pass  ...and replaced by a named marker in a normal result
+  pass  redaction audited in a normal result
+  pass  echoed credential inside an error message is redacted
+  pass  ...and replaced by a named marker inside an error message
+  pass  redaction audited inside an error message
+  pass  a secret with quotes and backslashes is redacted
+  pass  ...including its JSON-escaped spelling on the wire
+
+==============================================================================
+6. EXCEPTIONS ON THE SUBSTITUTION PATH
+==============================================================================
+  pass  the call is denied when the backend fails
+  pass  with rule_id credential_unavailable
+  pass  the raising backend's message does not reach the client
+  pass  ...nor stderr
+  pass  no traceback was printed at all
+  pass  ...nor the audit db
+  pass  a missing secret denies the call
+  pass  BrokerError message carries no value
+  pass  the original exception is not chained (no traceback with locals)
+  pass  Redactor.scrub removes the value from arbitrary text
+
+==============================================================================
+7. THE REAL keyring LIBRARY (not the test fixture)
+==============================================================================
+  SKIP  the real 'keyring' library is not installed for /Library/Frameworks/Python.framework/Versions/3.14/bin/python3.
+        Sections 1-6 used tests/fixtures/keyring.py. To exercise the
+        real library:  pip install keyring keyrings.alt
+        S4-REPORT.md records this as a gap, not as a pass.
+
+==============================================================================
+SUMMARY
+==============================================================================
+  59 passed, 0 failed

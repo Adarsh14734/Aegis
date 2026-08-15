@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+import broker
 import dlp
 import egress
 
@@ -113,6 +114,7 @@ class Policy:
             raise PolicyError("deny_paths must be a list")
 
         self.allowed_domains = self._load_allowed_domains(doc)
+        self.credentials = self._load_credentials(doc)
 
         rules = doc.get("tool_rules") or {}
         if not isinstance(rules, dict):
@@ -193,37 +195,155 @@ class Policy:
         raw = doc.get("allowed_domains")
         if raw is None:
             return ()
+        return Policy._normalize_host_list(raw, "allowed_domains")
+
+    @staticmethod
+    def _normalize_host_list(raw, where: str) -> tuple[str, ...]:
+        """Validate and normalize a list of bare hostnames.
+
+        Shared by `allowed_domains` and by each credential's `hosts`, so the
+        two cannot drift into disagreeing about what a host entry may look
+        like — a credential scoped by a laxer rule than the egress allowlist
+        would be a quiet way to widen both.
+        """
         if not isinstance(raw, list):
-            raise PolicyError("allowed_domains must be a list")
+            raise PolicyError(f"{where} must be a list")
 
         out: list[str] = []
         for entry in raw:
             if not isinstance(entry, str):
-                raise PolicyError(f"allowed_domains entry {entry!r} is not a string")
+                raise PolicyError(f"{where} entry {entry!r} is not a string")
             value = egress.normalize_domain(entry)
             if not value:
-                raise PolicyError("allowed_domains contains an empty entry")
+                raise PolicyError(f"{where} contains an empty entry")
             if value == "*":
-                raise PolicyError("allowed_domains may not contain '*' (allow-all)")
+                raise PolicyError(f"{where} may not contain '*' (allow-all)")
             if value.startswith("*."):
                 raise PolicyError(
-                    f"allowed_domains entry {entry!r}: wildcards are not supported; "
+                    f"{where} entry {entry!r}: wildcards are not supported; "
                     f"write {value[2:]!r}, which already covers its subdomains"
                 )
             if "/" in value:
                 raise PolicyError(
-                    f"allowed_domains entry {entry!r} must be a bare host, "
+                    f"{where} entry {entry!r} must be a bare host, "
                     f"without scheme or path"
                 )
             head, sep, tail = value.rpartition(":")
             if sep and tail.isdigit() and egress.parse_ip_literal(value) is None:
                 # ...but ':' inside a bare IPv6 literal is not a port.
                 raise PolicyError(
-                    f"allowed_domains entry {entry!r} must not carry a port; "
+                    f"{where} entry {entry!r} must not carry a port; "
                     f"ports are not part of the host check"
                 )
             out.append(value)
         return tuple(out)
+
+    @staticmethod
+    def _load_credentials(doc: dict) -> dict:
+        """S4: `credentials` maps a handle to the tools and hosts it may be
+        substituted into. Nothing here touches the keychain — this is the
+        grant, not the secret, and the secret lives only in the OS keychain.
+
+        A handle with neither `tools` nor `hosts` is loadable but unusable:
+        every substitution attempt denies. That is the "both absent means
+        deny" rule, kept as a runtime denial rather than a load error so the
+        denial is visible in the audit trail rather than only in a startup
+        message nobody rereads.
+        """
+        raw = doc.get("credentials")
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise PolicyError("credentials must be an object")
+
+        out: dict[str, dict] = {}
+        for handle, grant in raw.items():
+            if not broker.HANDLE_RE.fullmatch("${aegis:%s}" % handle):
+                raise PolicyError(
+                    f"credentials handle {handle!r} is not a valid handle name "
+                    f"(letters, digits, underscore, dot, dash; 64 chars max)"
+                )
+            if not isinstance(grant, dict):
+                raise PolicyError(f"credentials[{handle}] must be an object")
+            for key in grant:
+                if key not in ("tools", "hosts"):
+                    raise PolicyError(
+                        f"credentials[{handle}] has unknown key {key!r}; "
+                        f"only 'tools' and 'hosts' are understood"
+                    )
+            tools = grant.get("tools")
+            if tools is not None:
+                if not isinstance(tools, list) or not all(
+                    isinstance(t, str) and t for t in tools
+                ):
+                    raise PolicyError(
+                        f"credentials[{handle}].tools must be a list of tool names"
+                    )
+                if "*" in tools:
+                    raise PolicyError(
+                        f"credentials[{handle}].tools may not contain '*'; "
+                        f"name the tools that may use this secret"
+                    )
+            hosts = grant.get("hosts")
+            out[handle] = {
+                "tools": tuple(tools) if tools is not None else None,
+                "hosts": (
+                    Policy._normalize_host_list(hosts, f"credentials[{handle}].hosts")
+                    if hosts is not None
+                    else None
+                ),
+            }
+        return out
+
+    def authorize_credentials(self, tool: str, handles, strings) -> str | None:
+        """None if every handle in the call may be substituted, else the reason
+        it may not. Config only — no secret is read, because this runs while
+        the call may still be denied.
+        """
+        hosts_in_call = None
+        for where, handle in handles:
+            grant = self.credentials.get(handle)
+            if grant is None:
+                return (
+                    f"credential handle {handle!r} at {where} is not declared in "
+                    f"policy credentials"
+                )
+            tools, hosts = grant["tools"], grant["hosts"]
+            if not tools and not hosts:
+                return (
+                    f"credential handle {handle!r} declares neither tools nor "
+                    f"hosts, so it can never be substituted"
+                )
+            if not tools or tool not in tools:
+                return (
+                    f"credential handle {handle!r} is not permitted for tool "
+                    f"{tool!r}"
+                )
+            if not hosts:
+                return (
+                    f"credential handle {handle!r} declares no hosts, so there is "
+                    f"nothing to check the destination against"
+                )
+
+            if hosts_in_call is None:
+                hosts_in_call = [
+                    h for h in (egress.url_host(u) for _, u in
+                                egress.extract_urls(strings)) if h
+                ]
+            if not hosts_in_call:
+                return (
+                    f"credential handle {handle!r} is scoped to hosts "
+                    f"{list(hosts)}, but this call carries no URL to check"
+                )
+            # Every destination in the call must be covered. One unlisted URL
+            # is enough to smuggle the credential somewhere it was not granted.
+            for host in hosts_in_call:
+                if not egress.host_allowed(host, hosts):
+                    return (
+                        f"credential handle {handle!r} is not permitted for host "
+                        f"{host!r}"
+                    )
+        return None
 
     def _assert_policy_file_unreachable(self) -> None:
         """S0 decision #2: the agent must not be able to write the policy file.
@@ -270,7 +390,8 @@ class Policy:
     def evaluate(self, tool: str, arguments: dict, cwd: Path) -> Decision:
         """Return a Decision. Order is fixed and deny always wins.
 
-        deny_paths -> DLP -> egress -> tool rule -> containment -> default.
+        deny_paths -> DLP -> egress -> credentials -> tool rule -> containment
+        -> default.
 
         DLP and egress sit above the tool rule for the same reason deny_paths
         does: they must be unreachable by any allow rule. A tool being allowed
@@ -335,7 +456,17 @@ class Policy:
                     shown,
                 )
 
-        # 4. Tool must be named in policy. Unknown tool -> default (never allow).
+        # 4. Credential handles (C6). Authorization only — the value is not
+        # read here, and must not be: this call may still be denied below, and
+        # a secret fetched for a call that is never sent is a secret exposed
+        # for no reason.
+        handles = broker.find_handles(args)
+        if handles:
+            refusal = self.authorize_credentials(tool, handles, strings)
+            if refusal is not None:
+                return Decision(Effect.DENY, refusal, "credential_denied", tool, shown)
+
+        # 5. Tool must be named in policy. Unknown tool -> default (never allow).
         rule = self.tool_rules.get(tool)
         if rule is None:
             return self._default(tool, shown, f"tool {tool!r} not present in tool_rules")
@@ -344,7 +475,7 @@ class Policy:
         if effect is Effect.DENY:
             return Decision(Effect.DENY, "tool is denied by policy", f"tool_rules.{tool}", tool, shown)
 
-        # 5. Containment. Every path in the call must sit inside an allowed root.
+        # 6. Containment. Every path in the call must sit inside an allowed root.
         if resolved:
             allowed_roots = self._roots_for(rule)
             for p in resolved:

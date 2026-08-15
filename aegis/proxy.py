@@ -21,6 +21,7 @@ import sys
 import time
 from pathlib import Path
 
+import broker
 from audit import AuditError, AuditStore, default_db_path
 from policy import Decision, Effect, Policy, PolicyError
 
@@ -69,7 +70,12 @@ class Proxy:
         self.policy = policy
         self.cwd = cwd
         self.store = store
-        self.stats = {"seen": 0, "allowed": 0, "denied": 0, "audit_failures": 0}
+        self.redactor = broker.Redactor()
+        self.inflight: dict = {}  # request id -> tool, for correlating responses
+        self.stats = {
+            "seen": 0, "allowed": 0, "denied": 0, "audit_failures": 0,
+            "substituted": 0, "redactions": 0,
+        }
 
     def decide(self, message: dict) -> Decision:
         """Never raises. Any failure is a DENY (S0 decision #3)."""
@@ -89,6 +95,100 @@ class Proxy:
                 "fail_closed",
                 str((message.get("params") or {}).get("name", "?")),
             )
+
+    def substitute(self, message: dict, decision: Decision):
+        """Fill in credential handles for a call that policy has ALLOWED.
+
+        Returns (message_to_forward, decision, handles). The decision comes
+        back DENY if a secret could not be resolved: a call carrying an
+        unresolvable handle would otherwise reach the server with a literal
+        '${aegis:...}' in it, which is a broken credential and a leak of the
+        handle name to the server for no benefit.
+
+        Only reached when the policy chain returned ALLOW, so a denied call
+        never causes a keychain read. That ordering is the reason this lives
+        here and not in policy.py.
+        """
+        params = message.get("params") or {}
+        args = params.get("arguments")
+        if not isinstance(args, dict) or not broker.find_handles(args):
+            return message, decision, ()
+
+        try:
+            filled, resolved = broker.substitute(args, redactor=self.redactor)
+        except broker.BrokerError as exc:
+            # exc is already scrubbed and unchained by broker.substitute.
+            return message, Decision(
+                Effect.DENY,
+                f"credential substitution failed: {exc}",
+                "credential_unavailable",
+                decision.tool,
+                decision.paths,
+            ), ()
+        except BaseException as exc:  # noqa: BLE001 - belt and braces
+            return message, Decision(
+                Effect.DENY,
+                f"credential substitution raised {type(exc).__name__}; "
+                f"details withheld in case they carry a secret",
+                "credential_unavailable",
+                decision.tool,
+                decision.paths,
+            ), ()
+
+        handles = tuple(sorted(resolved))
+        self.stats["substituted"] += 1
+        # Rebuild the frame around the filled arguments. From here the message
+        # holds plaintext credentials: it goes to the server and nowhere else,
+        # and must never be logged.
+        forwarded = {**message, "params": {**params, "arguments": filled}}
+        return forwarded, decision, handles
+
+    def redact_frame(self, line: bytes) -> bytes:
+        """Strip any substituted credential out of a server response.
+
+        Byte-preserving when there is nothing to do, which is the overwhelming
+        common case: an untouched frame is written back exactly as received.
+        """
+        if not self.redactor.values:
+            return line
+        text = line.decode("utf-8", errors="surrogateescape")
+        redacted, hits = self.redactor.redact(text)
+        if not hits:
+            return line
+
+        total = sum(hits.values())
+        self.stats["redactions"] += total
+        names = ", ".join(sorted(hits))
+        log("credential_redacted", handles=sorted(hits), occurrences=total)
+
+        # Correlate to the call that carried the credential. Parsed only on
+        # this rare path, never for ordinary responses.
+        tool = "<server response>"
+        try:
+            tool = self.inflight.get(json.loads(text).get("id"), tool)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+
+        try:
+            self.store.record(
+                tool=tool,
+                effect="redact",
+                rule_id="credential_redacted",
+                reason=(
+                    f"server response echoed credential handle(s) {names} "
+                    f"({total} occurrence(s)); redacted before the frame reached "
+                    f"the model. The value is deliberately not recorded."
+                ),
+                paths=[],
+            )
+        except AuditError as exc:
+            # Not fail-closed: the response already exists and dropping it
+            # would hang the client. Redaction still happened; the gap in the
+            # record is reported loudly instead.
+            log("audit_write_failed", error=str(exc), tool=tool)
+            self.stats["audit_failures"] += 1
+
+        return redacted.encode("utf-8", errors="surrogateescape")
 
     def audit(self, decision: Decision) -> Decision:
         """Record the decision, then return the decision that is actually
@@ -140,6 +240,23 @@ async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) ->
         if isinstance(message, dict) and message.get("method") == "tools/call":
             proxy.stats["seen"] += 1
             decision = proxy.decide(message)
+
+            # C6: substitute only after ALLOW, and before the audit write, so
+            # the recorded decision is the one actually enforced rather than an
+            # ALLOW that a failed substitution later turned into a denial.
+            handles = ()
+            if decision.is_allowed():
+                message, decision, handles = proxy.substitute(message, decision)
+                if handles:
+                    decision = Decision(
+                        decision.effect,
+                        f"{decision.reason}; substituted credential handle(s) "
+                        + ", ".join(handles),
+                        decision.rule_id,
+                        decision.tool,
+                        decision.paths,
+                    )
+
             log(
                 "tool_call",
                 tool=decision.tool,
@@ -156,6 +273,11 @@ async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) ->
                     sys.stdout.flush()
                 continue
             proxy.stats["allowed"] += 1
+            proxy.inflight[message.get("id")] = decision.tool
+
+            if handles:
+                # Reserialize: `line` still holds the handle, not the secret.
+                line = (json.dumps(message) + "\n").encode("utf-8")
 
         writer.write(line)
         await writer.drain()
@@ -163,12 +285,19 @@ async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) ->
     writer.close()
 
 
-async def pump_server_to_client(reader, out_lock: asyncio.Lock) -> None:
-    """Server -> client, untouched."""
+async def pump_server_to_client(proxy: Proxy, reader, out_lock: asyncio.Lock) -> None:
+    """Server -> client, with substituted credentials stripped out.
+
+    A server that echoes the credential back — in an error message, a debug
+    field, a reflected request — would otherwise hand the model the exact
+    value the broker exists to keep away from it, and the whole control would
+    be theatre.
+    """
     while True:
         line = await reader.readline()
         if not line:
             break
+        line = proxy.redact_frame(line)
         async with out_lock:
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
@@ -218,7 +347,7 @@ async def run(server_cmd: list[str]) -> int:
     try:
         await asyncio.gather(
             pump_client_to_server(proxy, proc.stdin, out_lock),
-            pump_server_to_client(proc.stdout, out_lock),
+            pump_server_to_client(proxy, proc.stdout, out_lock),
             return_exceptions=True,
         )
         await proc.wait()
