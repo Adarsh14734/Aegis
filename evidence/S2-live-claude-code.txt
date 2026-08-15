@@ -1,0 +1,6 @@
+1|1786777938.48115|read_text_file|deny|deny_paths|path matches deny rule '.env'
+2|1786778086.72053|read_text_file|deny|deny_paths|path matches deny rule '.env'
+OK: 2 row(s) verified, chain intact
+db:   /Users/adarsh/Library/Application Support/Aegis/audit.db
+head: 648244273ded719496398f367efd295fa1fef6c69a442d5feba9d12bfc922897
+note: record the head hash externally and re-check with --expect-head to detect truncation of the newest rows.

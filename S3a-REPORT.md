@@ -208,8 +208,10 @@ Two things follow. First, this is the S2 report's known gap #1/#2 arriving in
 real life within a day: nothing anchored the head hash, so a change to the log
 cannot be distinguished from a legitimate rebuild. Second, **the chain did its
 job** — an undetectable deletion is what the control exists to prevent, and the
-deletion was detected. Treat the shared database as suspect and start a fresh
-one with its head hash recorded somewhere outside Aegis.
+deletion was detected. The shared database was reset and a fresh one started;
+its first real entries came from a live Claude Code session on 2026-08-15
+(head `648244...922897`, recorded externally), which simultaneously closed C3
+to VERIFIED and gave this database its first anchor.
 
 ### 4. Concurrent proxies can fail to start on a shared audit database
 
@@ -233,7 +235,7 @@ Using the tier definitions from S1-REPORT.md and S2-REPORT.md:
 | C4a | MCP-layer destination allowlist + SSRF rejection | **VERIFIED (harness, macOS)** | 32 host cases + 10 proxy-driven cases, raw output captured |
 | C5 | DLP scan of outbound request bodies | **UNVERIFIED** | no request bodies exist at this layer |
 | C5a | Secret scan of tool arguments, disclosure-safe | **VERIFIED (harness, macOS)** | 28 pattern cases + byte-level disclosure check |
-| C3 | Hash-chained audit | **VERIFIED (harness, macOS)**, unchanged | but see finding 3 |
+| C3 | Hash-chained audit | **VERIFIED** (promoted 2026-08-15) | live Claude Code session logged and chain-verified post-reset; see S2-REPORT.md §Status honesty |
 
 **VERIFIED (harness, macOS)** means: observed on real macOS hardware against the
 real proxy and the real store, with raw output captured — decisions driven by
@@ -244,10 +246,13 @@ I have introduced the `C4a`/`C5a` labels rather than promoting C4/C5, because
 marking C4 as verified on this evidence would be exactly the overclaim §8
 forbids. THREAT-MODEL.md §5 has been updated to carry both rows.
 
-**To reach VERIFIED unqualified:** one live Claude Code session where the model
-is asked to POST workspace contents to an unlisted host, and separately to write
-a file containing a live-looking key, with the client's own session log
-captured. That is the same ten-minute interactive gate S2 is still waiting on.
+**To reach VERIFIED unqualified for C4a/C5a specifically:** one live Claude
+Code session where the model is asked to POST workspace contents to an
+unlisted host, and separately to write a file containing a live-looking key,
+with the client's own session log captured. C3's equivalent gate (a live
+session attempting a denied read) was met on 2026-08-15 — see S2-REPORT.md.
+C4a and C5a have not yet had their own live-session gate; the harness evidence
+above stands until they do.
 
 ---
 

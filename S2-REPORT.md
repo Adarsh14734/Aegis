@@ -4,7 +4,7 @@
 **Date:** 2026-08-14
 **Control:** C3 — hash-chained append-only audit log + verifier CLI
 **Gate:** raw output of the chain detecting a tampered row, produced by a verifier that cannot see the control plane.
-**Status:** **VERIFIED (harness, macOS)** — the live-client tier is not yet met. See §Status honesty.
+**Status:** **VERIFIED** — live-client gate met 2026-08-15. See §Status honesty.
 
 ---
 
@@ -29,6 +29,7 @@ Claude Code <--stdio--> aegis/proxy.py <--stdio--> MCP server
 | `tests/tamper.py` | S2 harness: real decisions, then four attacks on the database |
 | `evidence/S2-tamper-transcript.txt` | Raw harness output — the gate |
 | `evidence/S2-real-path-verify.txt` | Real default macOS path, real policy, 11 rows verified |
+| `evidence/S2-live-claude-code.txt` | **Live Claude Code session, 2026-08-15 — the C3 gate** |
 
 S1 closes gap #2 ("No audit persistence. Decisions go to stderr and vanish").
 The stderr `log()` is unchanged and still emits every decision; it is now
@@ -203,18 +204,36 @@ verifier that blesses the wrong file is worse than one that crashes.
 
 `THREAT-MODEL.md` §5 promotion rule requires a captured raw transcript of the
 attack being attempted and blocked. That exists (`evidence/S2-tamper-transcript.txt`).
-But S1 set a **higher bar** for the word VERIFIED unqualified: observed against
+S1 set a **higher bar** for the word VERIFIED unqualified: observed against
 live Claude Code, with the client's own session log captured.
 
-C3 has not met that bar. Everything here was observed on real macOS hardware
-against the real proxy, the real store and the real default path — but the
-decisions came from `tests/drive.py` and `tests/tamper.py`, not from a live
-model session. C3 is therefore recorded as **VERIFIED (harness, macOS)**.
+**C3 has now met that bar.** On 2026-08-15, a live Claude Code session (v2.1.232,
+macOS) was pointed at the S1 `.mcp.json` wiring, unchanged, and asked to read
+`workspace/.env`. The model attempted `mcp__filesystem__read_text_file` on the
+real path twice before giving up on its own. Both attempts were recorded and
+denied:
 
-**To close it to full VERIFIED**, one thing is missing: run a live Claude Code
-session through the proxy (the S1 `.mcp.json` wiring, unchanged), then verify
-the chain and confirm the model's attempts appear as rows with the right
-`rule_id`. That is a ten-minute interactive session, not a build task.
+```
+$ sqlite3 ~/Library/Application\ Support/Aegis/audit.db \
+  "SELECT id,tool,effect,rule_id FROM audit ORDER BY id DESC LIMIT 5;"
+2|read_text_file|deny|deny_paths
+1|read_text_file|deny|deny_paths
+
+$ python3 aegis/verify.py
+OK: 2 row(s) verified, chain intact
+head: 648244273ded719496398f367efd295fa1fef6c69a442d5feba9d12bfc922897
+```
+
+This was the first write to the database after the 2026-08-15 reset described
+above, so rows 1–2 are the entire chain at this point — small, but genuinely
+live: real client, real model, real denial, real chain. The head hash
+`648244...922897` has been recorded externally (outside this repo) as the first
+anchor since the reset. Every subsequent `--expect-head` check is measured
+against it.
+
+C3 is promoted from VERIFIED (harness, macOS) to **VERIFIED**, on the same
+basis S1 used for C1/C2: the client's own record of what it attempted, not the
+model's summary, and not harness-only evidence.
 
 ---
 
