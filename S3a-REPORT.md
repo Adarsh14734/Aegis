@@ -121,7 +121,7 @@ argument path are present. Sample audit row:
 
 ## Findings
 
-### 1. Checking URLs in every argument denies ordinary file writes. This is the headline cost.
+### 1. Checking URLs in every argument denies ordinary file writes — FIXED in S3b
 
 Case 25 in `evidence/S3a-transcript.txt`:
 
@@ -148,6 +148,11 @@ is in the test suite on purpose. **Recommended for S3b:** apply the URL check
 only to arguments of tools that can perform a network request, declared per-tool
 in policy (`"egress": true`), and keep the DLP scan on all arguments where it
 belongs. That is a policy-schema change, so it is out of S3a scope.
+
+**Resolved in S3b** exactly as recommended: `"egress": true` is now per-tool and
+the check is skipped without it, with a load-time refusal for fetch-named tools
+that omit the flag. DLP still scans every argument of every tool. The drive.py
+case above is now a must-ALLOW regression test. See S3b-REPORT.md fix 1.
 
 ### 2. `pk_live_` is a publishable key
 
@@ -213,7 +218,7 @@ its first real entries came from a live Claude Code session on 2026-08-15
 (head `648244...922897`, recorded externally), which simultaneously closed C3
 to VERIFIED and gave this database its first anchor.
 
-### 4. Concurrent proxies can fail to start on a shared audit database
+### 4. Concurrent proxies can fail to start on a shared audit database — FIXED in S3b
 
 Observed during the concurrency test: 1 of 8 processes raised
 `database is locked` at `PRAGMA journal_mode=WAL` in `AuditStore.open()` and
@@ -222,6 +227,10 @@ Aegis proxy per MCP server, all sharing one database, a proxy can fail to boot.
 The fix is to read `PRAGMA journal_mode` first and only set it when it differs.
 **Not applied**: it is a change to `audit.py`, which S3a was told to leave
 unchanged. Filed for whoever owns S3b.
+
+**Applied in S3b**, plus a bounded open retry. Re-verified at 16 concurrent
+proxies on one database: zero boot failures, contiguous ids, chain intact. See
+S3b-REPORT.md fix 2.
 
 ---
 

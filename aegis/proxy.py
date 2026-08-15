@@ -224,9 +224,22 @@ async def run(server_cmd: list[str]) -> int:
         await proc.wait()
     finally:
         head_id, head_hash = store.head()
+        # S3b: anchor the head next to the db so verify.py has a reference
+        # point without the operator having written one down. Best effort —
+        # the rows are already committed, so a failure here is not worth
+        # denying anything over, but it must be visible.
+        anchored = store.write_head_anchor()
+        if anchored is None:
+            log("head_anchor_write_failed", path=str(store.head_file_path()))
         store.close()
 
-    log("stopped", **proxy.stats, audit_head_id=head_id, audit_head_hash=head_hash)
+    log(
+        "stopped",
+        **proxy.stats,
+        audit_head_id=head_id,
+        audit_head_hash=head_hash,
+        head_anchor=str(store.head_file_path()) if anchored else None,
+    )
     return 0
 
 

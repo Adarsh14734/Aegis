@@ -246,6 +246,12 @@ model's summary, and not harness-only evidence.
    (case C). Nothing automatically anchors the head hash yet — no timestamping
    service, no append to a remote log, no notarization. The operator has to do
    it by hand, which means in practice it will not happen.
+   *S3b narrows this, and does not close it:* the proxy now writes
+   `aegis-head.txt` beside the database on clean shutdown and `verify.py` reads
+   it automatically. That anchor is local, unsigned, and writable by anyone who
+   can write the database — it makes a silent truncation cost a second edit and
+   catches accidental loss. An anchor held off this machine is still the only
+   real answer. See S3b-REPORT.md fix 3.
 3. **Deleting the entire database is not detected by the verifier**, only by
    noticing the file is gone. An empty chain is a valid chain.
 4. **Session boundaries are not in the chain.** Only decisions are recorded, so

@@ -4,7 +4,7 @@
   "deny_paths": [".env", "*.pem", "id_rsa", "**/.aws/**", "**/.ssh/**"],
   "allowed_domains": ["api.example.com", "example.com"],
   "tool_rules": {
-    "fetch":                      {"effect": "allow"},
+    "fetch":                      {"effect": "allow", "egress": true},
     "read_file":                  {"effect": "allow", "within": ["<workspace>"]},
     "read_text_file":             {"effect": "allow", "within": ["<workspace>"]},
     "read_multiple_files":        {"effect": "allow", "within": ["<workspace>"]},

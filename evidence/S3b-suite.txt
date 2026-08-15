@@ -1,0 +1,94 @@
+# Aegis S3b — three scoped fixes (tests/s3b.py)
+# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 13:12:24 IST 2026
+
+
+==============================================================================
+FIX 1 — egress applies only to tools declaring "egress": true
+==============================================================================
+  pass  write_file with a URL in content is ALLOWED (the S3a false positive)
+  pass  write_file with an SSRF-looking URL is still ALLOWED (not a destination)
+  pass  fetch to an unlisted host is DENIED
+  pass  fetch to an allowed host is ALLOWED
+  pass  fetch to cloud metadata is DENIED
+  pass  DLP still fires on a non-egress tool
+  pass  DLP still fires on an egress tool
+  pass  deny_paths still outranks everything
+  pass  unknown tool with a URL falls to default-deny
+  pass  explicit "egress": false skips the check
+
+  pass  refuses to load: 'fetch_url' without an egress flag
+  pass  refuses to load: 'http_get' without an egress flag
+  pass  refuses to load: 'web_search' without an egress flag
+  pass  refuses to load: 'my_api_call' without an egress flag
+  pass  refuses to load: 'downloader' without an egress flag
+  pass  refuses to load: 'curl_wrapper' without an egress flag
+  pass  refuses to load: 'browse_page' without an egress flag
+  pass  refuses to load: 'url_open' without an egress flag
+  pass  refuses to load: 'send_request' without an egress flag
+  pass  refuses to load: 'WebFetch' without an egress flag
+  pass  refuses to load: 'mcp__browser__open' without an egress flag
+
+  pass  loads: 'fetch_url' declaring egress=True
+  pass  loads: 'fetch_url' declaring egress=False
+  pass  loads: 'http_get' declaring egress=True
+  pass  loads: 'http_get' declaring egress=False
+  pass  loads: 'web_search' declaring egress=True
+  pass  loads: 'web_search' declaring egress=False
+  pass  loads: 'my_api_call' declaring egress=True
+  pass  loads: 'my_api_call' declaring egress=False
+
+  pass  15 ordinary filesystem tool names need no flag
+  pass  rejects non-boolean egress 'yes': tool_rules[summarize].egress must be true or 
+  pass  rejects non-boolean egress 1: tool_rules[summarize].egress must be true or 
+  pass  rejects non-boolean egress None: tool_rules[summarize].egress must be true or 
+  pass  rejects non-boolean egress 'true': tool_rules[summarize].egress must be true or 
+
+==============================================================================
+FIX 2 — 16 concurrent proxies against one audit database
+==============================================================================
+  16 proxies x 12 calls in 0.4s
+  pass  every proxy exited 0
+  pass  zero boot failures
+  pass  no 'database is locked' reached stderr
+  pass  all 192 rows written
+  pass  id sequence is contiguous
+  pass  chain verifies after concurrent writes
+  pass  verify did not need to alter the database
+  pass  database is still in WAL mode
+
+==============================================================================
+FIX 3 — head anchor written on shutdown, read back by verify.py
+==============================================================================
+  pass  aegis-head.txt written next to the db
+  pass  anchor is mode 0600
+
+    # Aegis audit head anchor. Written on clean shutdown.
+    # NOT tamper-proof: an attacker who can rewrite the database can
+    # rewrite this file too. Keep a copy somewhere Aegis cannot write.
+    db=audit.db
+    head_id=192
+    head_hash=058a2644e881a20b4fe4fd666ce17fff56a422887045e05c63919e41c4ba884b
+    written_at=1786779745.243
+
+  pass  anchor names the database it describes
+  pass  anchor carries a full 64-char hash
+  pass  anchor states its own limitation in the file
+  pass  verify reports the anchor source it used
+  pass  verify states the anchor is not tamper-proof
+  pass  no anchor file -> 'anchor: none'
+  pass  and says truncation would be invisible
+  pass  --no-anchor ignores the file
+
+  pass  truncated tail is caught by the anchor
+  pass  and the message says what happened
+  pass  the same truncation is invisible without the anchor (this is the limitation, not a pass)
+  pass  wholesale chain rewrite is caught by the anchor
+  pass  rows appended past a stale anchor still verify
+  pass  and the growth is reported
+  pass  an unparseable anchor fails rather than being ignored
+  pass  an anchor naming another db is ignored, not misapplied
+
+==============================================================================
+SUMMARY
+==============================================================================
+  60 passed, 0 failed

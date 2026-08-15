@@ -49,6 +49,14 @@ class PolicyError(Exception):
 # caught by default-deny rather than by guessing at argument names.
 PATH_ARG_KEYS = ("path", "paths", "source", "destination", "src", "dst", "directory")
 
+# Substrings that make a tool name look like it performs network requests.
+# Used only to refuse a policy that leaves such a tool's "egress" flag unstated
+# (S3b fix 1). Matching is case-insensitive substring, so `web_fetch`,
+# `HTTPRequest` and `mcp__browser__open` are all caught.
+EGRESS_NAME_HINTS = (
+    "fetch", "http", "request", "curl", "browse", "download", "web", "url", "api",
+)
+
 
 def safe_resolve(raw: str, cwd: Path) -> Path:
     """Resolve a path for policy evaluation without trusting it.
@@ -112,7 +120,13 @@ class Policy:
         for tool, rule in rules.items():
             if rule.get("effect") not in {e.value for e in Effect}:
                 raise PolicyError(f"tool_rules[{tool}] has invalid effect")
+            if "egress" in rule and not isinstance(rule["egress"], bool):
+                raise PolicyError(
+                    f"tool_rules[{tool}].egress must be true or false, "
+                    f"got {rule['egress']!r}"
+                )
         self.tool_rules = rules
+        self._assert_fetching_tools_declare_egress()
 
         default = doc.get("default_effect", "deny")
         if default == Effect.ALLOW.value:
@@ -129,6 +143,41 @@ class Policy:
             raise PolicyError("ask_behavior may not be 'allow' before S5")
 
         self._assert_policy_file_unreachable()
+
+    def _assert_fetching_tools_declare_egress(self) -> None:
+        """S3b: the egress flag defaults to false, so a fetching tool that
+        loses its flag silently loses its destination check. That is a
+        catastrophic default to get wrong quietly, so any tool whose *name*
+        suggests it fetches must state the flag either way.
+
+        This is a spelling check on names, not a capability check — Aegis
+        cannot know what a tool does. It catches the realistic accident (a
+        renamed or newly added fetch tool, a hand-edited policy) and nothing
+        else. A network tool named `summarize_page` still slips through, which
+        is why S3a-REPORT.md lists server-derived requests as out of scope.
+        """
+        missing = [
+            tool
+            for tool, rule in self.tool_rules.items()
+            if "egress" not in rule
+            and any(hint in tool.lower() for hint in EGRESS_NAME_HINTS)
+        ]
+        if missing:
+            raise PolicyError(
+                "tool_rules entries "
+                + ", ".join(repr(t) for t in sorted(missing))
+                + " have names suggesting they make network requests but do not "
+                  'declare "egress". Add "egress": true to apply the destination '
+                  'allowlist, or "egress": false to state explicitly that the tool '
+                  "does not fetch. Refusing to start rather than guess."
+            )
+
+    def tool_does_egress(self, tool: str) -> bool:
+        """Absent means false: non-fetching tools are the overwhelming common
+        case, and treating every argument as a destination is what made S3a
+        deny ordinary README writes."""
+        rule = self.tool_rules.get(tool)
+        return bool(rule.get("egress", False)) if isinstance(rule, dict) else False
 
     @staticmethod
     def _load_allowed_domains(doc: dict) -> tuple[str, ...]:
@@ -226,6 +275,11 @@ class Policy:
         DLP and egress sit above the tool rule for the same reason deny_paths
         does: they must be unreachable by any allow rule. A tool being allowed
         says the *operation* is permitted, never that the *content* is.
+
+        S3b: the egress step is skipped entirely for tools that do not declare
+        `"egress": true`. DLP is not — a secret in a write payload is a
+        disclosure whatever the destination, and the file it lands in is read
+        by something eventually.
         """
         args = arguments if isinstance(arguments, dict) else {}
         raw_paths = self.extract_paths(args)
@@ -265,16 +319,21 @@ class Policy:
         if secret is not None:
             return Decision(Effect.DENY, secret.reason(), "dlp", tool, shown)
 
-        # 3. Egress destinations (C4, partial). Deny-by-default allowlist.
-        url = egress.check(strings, self.allowed_domains)
-        if url is not None:
-            return Decision(
-                Effect.DENY,
-                f"URL {url.scheme}://{url.host} in {url.where}: {url.reason}",
-                "egress_domain",
-                tool,
-                shown,
-            )
+        # 3. Egress destinations (C4, partial). Deny-by-default allowlist, but
+        # only for tools that declare they fetch. A URL inside a file being
+        # written is not a destination, and treating it as one denied ordinary
+        # README edits in S3a — a control widened until it is turned off buys
+        # nothing (D4).
+        if self.tool_does_egress(tool):
+            url = egress.check(strings, self.allowed_domains)
+            if url is not None:
+                return Decision(
+                    Effect.DENY,
+                    f"URL {url.scheme}://{url.host} in {url.where}: {url.reason}",
+                    "egress_domain",
+                    tool,
+                    shown,
+                )
 
         # 4. Tool must be named in policy. Unknown tool -> default (never allow).
         rule = self.tool_rules.get(tool)
