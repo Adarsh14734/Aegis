@@ -18,12 +18,15 @@
     "write_file":                 {"effect": "allow", "within": ["<workspace>"]},
     "create_directory":           {"effect": "allow", "within": ["<workspace>"]},
     "edit_file":                  {"effect": "ask",   "within": ["<workspace>"]},
-    "move_file":                  {"effect": "ask",   "within": ["<workspace>"]},
-    "delete_file":                {"effect": "deny"}
+    "move_file":                  {"effect": "ask",   "within": ["<workspace>"], "destructive": true},
+    "delete_file":                {"effect": "deny",  "destructive": true}
   },
+  "bulk_threshold": 10,
+  "ask_timeout_seconds": 120,
+  "trash_dir": "~/Library/Application Support/Aegis/trash",
   "credentials": {
     "github_token": {"tools": ["fetch"], "hosts": ["api.github.com"]}
   },
   "default_effect": "deny",
-  "ask_behavior": "deny"
+  "ask_behavior": "prompt"
 }

@@ -21,7 +21,9 @@ import sys
 import time
 from pathlib import Path
 
+import approval
 import broker
+import trash
 from audit import AuditError, AuditStore, default_db_path
 from policy import Decision, Effect, Policy, PolicyError
 
@@ -72,9 +74,12 @@ class Proxy:
         self.store = store
         self.redactor = broker.Redactor()
         self.inflight: dict = {}  # request id -> tool, for correlating responses
+        self.ask_timeout = policy.ask_timeout_seconds
         self.stats = {
             "seen": 0, "allowed": 0, "denied": 0, "audit_failures": 0,
             "substituted": 0, "redactions": 0,
+            "approvals_requested": 0, "approvals_granted": 0,
+            "trash_snapshots": 0, "trash_failures": 0,
         }
 
     def decide(self, message: dict) -> Decision:
@@ -95,6 +100,96 @@ class Proxy:
                 "fail_closed",
                 str((message.get("params") or {}).get("name", "?")),
             )
+
+    async def resolve_ask(self, decision: Decision, loop) -> Decision:
+        """C7. Block on a human, then return the decision actually enforced.
+
+        Only the terminal I/O goes to an executor thread; every audit write
+        stays on the event-loop thread. The SQLite connection is owned by the
+        thread that opened it (`check_same_thread`), and the alternative —
+        relaxing that and serializing writes with a lock — would mean editing
+        the S2 audit store to suit a caller. The store is the thing whose
+        integrity everything else rests on, so the caller bends instead.
+
+        The prompt row is written *before* asking, so a proxy killed mid-prompt
+        still leaves evidence that a human was asked and never answered.
+        """
+        try:
+            self.store.record(
+                tool=decision.tool,
+                effect="ask",
+                rule_id="approval_prompt",
+                reason=(
+                    f"blocking for human approval ({decision.rule_id}): "
+                    f"{decision.reason}; timeout {int(self.ask_timeout)}s, "
+                    f"denies on timeout"
+                ),
+                paths=list(decision.paths),
+            )
+        except AuditError as exc:
+            # Same fail-closed rule as any other decision: if it cannot be
+            # recorded, it does not happen.
+            log("audit_write_failed", error=str(exc), tool=decision.tool)
+            self.stats["audit_failures"] += 1
+            return Decision(
+                Effect.DENY,
+                f"approval prompt could not be recorded ({exc}); failing closed",
+                "audit_fail_closed",
+                decision.tool,
+                decision.paths,
+            )
+
+        result = await loop.run_in_executor(
+            None, approval.resolve,
+            decision.tool, decision.rule_id, decision.reason, list(decision.paths),
+            self.ask_timeout,
+        )
+        self.stats["approvals_requested"] += 1
+        self.stats["approvals_granted"] += int(result.approved)
+        log("approval", rule=result.rule_id, approved=result.approved,
+            resolver=result.resolver)
+
+        return Decision(
+            Effect.ALLOW if result.approved else Effect.DENY,
+            f"{result.detail} (resolved by: {result.resolver})",
+            result.rule_id,
+            decision.tool,
+            decision.paths,
+        )
+
+    def stage_destructive(self, decision: Decision) -> Decision:
+        """C9. Copy every target into the trash before the call is forwarded.
+
+        A failure here denies the call. The whole point is that a destructive
+        action is only allowed to proceed once it is recoverable, so 'could not
+        make it recoverable' has exactly one safe answer.
+        """
+        if not self.policy.tool_is_destructive(decision.tool) or not decision.paths:
+            return decision
+        if self.policy.trash_dir is None:  # policy load already refuses this
+            return Decision(
+                Effect.DENY,
+                "tool is marked destructive but no trash_dir is configured",
+                "trash_unavailable", decision.tool, decision.paths,
+            )
+        try:
+            snap = trash.stage(decision.paths, self.policy.trash_dir, decision.tool)
+        except trash.TrashError as exc:
+            self.stats["trash_failures"] += 1
+            log("trash_failed", error=str(exc), tool=decision.tool)
+            return Decision(
+                Effect.DENY,
+                f"could not preserve the target(s) before a destructive call "
+                f"({exc}); denying rather than allowing an unrecoverable action",
+                "trash_failed", decision.tool, decision.paths,
+            )
+        self.stats["trash_snapshots"] += 1
+        log("trash_staged", snapshot=snap.snapshot_id, saved=len(snap.saved))
+        return Decision(
+            decision.effect,
+            f"{decision.reason}; {snap.summary()}",
+            decision.rule_id, decision.tool, decision.paths,
+        )
 
     def substitute(self, message: dict, decision: Decision):
         """Fill in credential handles for a call that policy has ALLOWED.
@@ -241,6 +336,19 @@ async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) ->
             proxy.stats["seen"] += 1
             decision = proxy.decide(message)
 
+            # C7: an ASK blocks here until a human answers, times out, or the
+            # absence of a terminal denies it. Run in an executor so the
+            # server->client pump keeps flowing while somebody reads the
+            # prompt; the client->server pump stays blocked, which serializes
+            # approvals deliberately — two prompts competing for one terminal
+            # is how the wrong one gets approved.
+            if decision.effect is Effect.ASK:
+                decision = await proxy.resolve_ask(decision, loop)
+
+            # C9: make the action recoverable before it is forwarded.
+            if decision.is_allowed():
+                decision = proxy.stage_destructive(decision)
+
             # C6: substitute only after ALLOW, and before the audit write, so
             # the recorded decision is the one actually enforced rather than an
             # ALLOW that a failed substitution later turned into a denial.
@@ -329,6 +437,9 @@ async def run(server_cmd: list[str]) -> int:
         policy=str(policy_path),
         roots=[str(r) for r in policy.workspace_roots],
         server=server_cmd,
+        killswitch=str(policy.killswitch_path),
+        bulk_threshold=policy.bulk_threshold,
+        trash_dir=str(policy.trash_dir) if policy.trash_dir else None,
         audit=str(db_path),
         audit_head_id=head_id,
         audit_head_hash=head_hash[:16],

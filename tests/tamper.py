@@ -232,7 +232,10 @@ allow_decision = policy_mod.Decision(
     policy_mod.Effect.ALLOW, "matched allow rule", "tool_rules.read_file",
     "read_file", (str(WS / "config.txt"),),
 )
-enforced = proxy_mod.Proxy(None, WS, BrokenStore()).audit(allow_decision)
+# S5: Proxy now reads the approval timeout off the policy at construction, so
+# this needs a real one rather than None.
+loaded_policy = policy_mod.Policy(json.loads(POLICY.read_text()), POLICY)
+enforced = proxy_mod.Proxy(loaded_policy, WS, BrokenStore()).audit(allow_decision)
 code_midsession = 0 if enforced.effect is policy_mod.Effect.DENY else 1
 print(f"  | policy said: {allow_decision.effect.value}")
 print(f"  | enforced:    {enforced.effect.value}  rule={enforced.rule_id}")

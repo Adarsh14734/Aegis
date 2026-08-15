@@ -1,0 +1,3 @@
+#!/bin/sh
+# List and restore files Aegis copied aside before a destructive tool call.
+exec python3 "$(dirname "$0")/../aegis/trash.py" "$@"

@@ -21,6 +21,7 @@ from pathlib import Path
 import broker
 import dlp
 import egress
+import killswitch
 
 
 class Effect(str, Enum):
@@ -127,6 +128,11 @@ class Policy:
                     f"tool_rules[{tool}].egress must be true or false, "
                     f"got {rule['egress']!r}"
                 )
+            if "destructive" in rule and not isinstance(rule["destructive"], bool):
+                raise PolicyError(
+                    f"tool_rules[{tool}].destructive must be true or false, "
+                    f"got {rule['destructive']!r}"
+                )
         self.tool_rules = rules
         self._assert_fetching_tools_declare_egress()
 
@@ -137,14 +143,70 @@ class Policy:
             raise PolicyError("default_effect may not be 'allow'")
         self.default_effect = Effect(default)
 
-        # S5 has not been built. Until an approval loop exists, ASK cannot be
-        # resolved by a human, so it must collapse to DENY. Recorded explicitly
-        # so this becomes a visible change when S5 lands.
-        self.ask_behavior = Effect(doc.get("ask_behavior", "deny"))
-        if self.ask_behavior is Effect.ALLOW:
-            raise PolicyError("ask_behavior may not be 'allow' before S5")
+        # S5: ASK now means ask. `ask_behavior` survives as an explicit opt-out
+        # for headless deployments that would rather deny than block on a
+        # prompt nobody will see; "prompt" is the default and "allow" is still
+        # refused outright, because a policy that auto-approves its own ASK
+        # rules has written a deny rule and an allow rule and got both wrong.
+        behaviour = doc.get("ask_behavior", "prompt")
+        if behaviour == Effect.ALLOW.value:
+            raise PolicyError("ask_behavior may not be 'allow'")
+        if behaviour not in ("prompt", Effect.DENY.value, Effect.ASK.value):
+            raise PolicyError(
+                f"ask_behavior must be 'prompt' or 'deny', got {behaviour!r}"
+            )
+        self.ask_behavior = Effect.ASK if behaviour in ("prompt", "ask") else Effect.DENY
+
+        # C7. How long a prompt waits before denying. Not unbounded: a proxy
+        # blocked forever on a prompt nobody is looking at is a hung agent, and
+        # the safe resolution of "nobody answered" is no.
+        timeout = doc.get("ask_timeout_seconds", 120)
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+            raise PolicyError(
+                f"ask_timeout_seconds must be a positive number, got {timeout!r}"
+            )
+        self.ask_timeout_seconds = float(timeout)
+
+        # C8. Any call touching more than this many paths escalates to ASK, no
+        # matter what its tool rule says. T1 is the confused agent that globs
+        # too widely; the count is the only signal available at this layer that
+        # separates "edit a file" from "rewrite the project".
+        threshold = doc.get("bulk_threshold", 10)
+        if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1:
+            raise PolicyError(
+                f"bulk_threshold must be a positive integer, got {threshold!r}"
+            )
+        self.bulk_threshold = threshold
+
+        # C9. Where destructive calls stage their backups. No default: silently
+        # inventing a directory to write copies of the user's files into is not
+        # a decision Aegis should make on its own.
+        trash = doc.get("trash_dir")
+        if trash is not None and not isinstance(trash, str):
+            raise PolicyError("trash_dir must be a string path")
+        self.trash_dir = Path(trash).expanduser() if trash else None
+        if self.trash_dir is not None:
+            for root in self.workspace_roots:
+                if _within(self.trash_dir.resolve(), root):
+                    raise PolicyError(
+                        f"trash_dir {self.trash_dir} is inside agent-writable "
+                        f"workspace root {root}; the agent could delete its own "
+                        f"undo history"
+                    )
+        if any(r.get("destructive") for r in self.tool_rules.values()) and not self.trash_dir:
+            raise PolicyError(
+                "tool_rules declare \"destructive\": true but no trash_dir is set; "
+                "refusing to run a soft-delete control with nowhere to put the copy"
+            )
+
+        # Resolved once; the file's *presence* is what gets checked per call.
+        self.killswitch_path = killswitch.killswitch_path()
 
         self._assert_policy_file_unreachable()
+
+    def tool_is_destructive(self, tool: str) -> bool:
+        rule = self.tool_rules.get(tool)
+        return bool(rule.get("destructive", False)) if isinstance(rule, dict) else False
 
     def _assert_fetching_tools_declare_egress(self) -> None:
         """S3b: the egress flag defaults to false, so a fetching tool that
@@ -407,6 +469,21 @@ class Policy:
         resolved = [safe_resolve(p, cwd) for p in raw_paths]
         shown = tuple(str(p) for p in resolved)
 
+        # 0. Kill switch (C10). Before everything, including deny_paths: when a
+        # human has hit stop, Aegis should not be evaluating rules at all, and
+        # the reason recorded should be "stopped", not whichever rule the call
+        # happened to trip first. One stat() per call, never cached.
+        if killswitch.is_engaged(self.killswitch_path):
+            why = killswitch.reason(self.killswitch_path)
+            return Decision(
+                Effect.DENY,
+                "Aegis kill switch is engaged; every tool call is denied until it "
+                "is released with aegis-resume" + (f" (reason: {why})" if why else ""),
+                "killswitch",
+                tool,
+                shown,
+            )
+
         # 1. Explicit deny globs. Highest precedence, checked before anything else.
         for pattern in self.deny_paths:
             for p in resolved:
@@ -488,16 +565,37 @@ class Policy:
                         shown,
                     )
 
+        # 7. Bulk threshold (C8). Placed here, above every path that can return
+        # ALLOW, so an allow rule cannot skip it. It sits *below* the deny
+        # checks on purpose: a call that policy already refuses should be
+        # refused, not put in front of a human. Escalating a denial to a prompt
+        # would spend the approval budget (D4) on calls whose answer is already
+        # known, which is how prompts get clicked through without reading.
+        if len(resolved) > self.bulk_threshold:
+            return Decision(
+                self._ask_or_deny(),
+                f"call touches {len(resolved)} paths, above the bulk threshold of "
+                f"{self.bulk_threshold}; a human should confirm an operation this "
+                f"wide even though {tool!r} is otherwise permitted",
+                "bulk_operation",
+                tool,
+                shown,
+            )
+
         if effect is Effect.ASK:
             return Decision(
-                self.ask_behavior,
-                "action requires human approval; approval loop is not implemented until S5",
+                self._ask_or_deny(),
+                "policy marks this tool as requiring human approval",
                 f"tool_rules.{tool}",
                 tool,
                 shown,
             )
 
         return Decision(Effect.ALLOW, "matched allow rule", f"tool_rules.{tool}", tool, shown)
+
+    def _ask_or_deny(self) -> Effect:
+        """ASK unless the operator has explicitly asked for headless denial."""
+        return Effect.ASK if self.ask_behavior is Effect.ASK else Effect.DENY
 
     def _roots_for(self, rule: dict) -> tuple[Path, ...]:
         within = rule.get("within")

@@ -1,0 +1,120 @@
+# Aegis S5 — approval, bulk, soft delete, kill switch (tests/s5.py)
+# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 20:49:08 IST 2026
+# Section 3 drives a REAL pty. The C7 end-to-end-with-a-human path is
+# NOT RUN and the suite exits non-zero because of it.
+
+
+==============================================================================
+1. C10 KILL SWITCH
+==============================================================================
+  pass  kill switch lives in the data dir beside audit.db
+  pass  before: an ordinary call is allowed
+  pass  engaged: an ordinary call is denied
+  pass  engaged: beats deny_paths (checked before every other rule)
+  pass  engaged: beats default-deny too
+  pass  the denial tells you how to undo it
+  pass  engaged: proxy denies the call
+  pass  engaged: the frame names the rule
+  pass  engaged: audited with rule_id killswitch
+  pass  survives proxy restart (it is a file, not process state)
+  pass  released: calls flow again without a restart
+  pass  cost is 1.3us per call (one stat)
+  pass  a missing switch in a missing dir is 'not engaged', not an error
+
+==============================================================================
+2. C8 BULK THRESHOLD
+==============================================================================
+  pass  10 paths at threshold 10 is allowed
+  pass  11 paths escalates to ASK
+  pass  the reason states the count and the threshold
+  pass  ...and read_many is explicitly an allow rule
+  pass  a lower threshold escalates sooner
+  pass  a higher threshold lets it through
+  pass  a denied tool with 11 paths is denied, not escalated
+  pass  an out-of-workspace path denies rather than prompting
+  pass  rejects bulk_threshold=0
+  pass  rejects bulk_threshold=-1
+  pass  rejects bulk_threshold='10'
+  pass  rejects bulk_threshold=1.5
+  pass  rejects bulk_threshold=True
+  pass  default threshold is 10 when the key is absent
+
+==============================================================================
+3. C7 APPROVAL — real pty, real select, real timeout
+==============================================================================
+  pass  'y' approves
+  pass  the prompt names the tool
+  pass  the prompt lists the paths
+  pass  the prompt names the rule that triggered it
+  pass  the prompt states the timeout consequence
+  pass  the resolver is recorded as user@host via tty
+  pass  'yes' approves
+  pass  'n' denies
+  pass  an empty line denies
+  pass  anything not affirmative denies
+  pass  'Y' approves (case-insensitive)
+  pass  no answer times out to DENY
+  pass  timeout fired at 1.2s (asked for 1.0s)
+  pass  the terminal is told it timed out
+
+==============================================================================
+4. C7 NO CONTROLLING TERMINAL — end to end through the proxy
+==============================================================================
+  pass  an ASK with no tty is denied
+  pass  ...with rule_id ask_no_tty
+  pass  the model is told the call did not run
+  pass  the server never performed the move
+  pass  the prompt attempt is audited
+  pass  the resolution is audited
+  pass  the audit says why it was denied
+  pass  a bulk escalation with no tty also denies
+  pass  no bulk work was performed
+  pass  ask_behavior=deny still collapses ASK for headless use
+  pass  ask_behavior=allow is refused at load
+
+==============================================================================
+5. C9 SOFT DELETE
+==============================================================================
+  pass  a destructive call is forwarded once staged
+  pass  one snapshot written (1)
+  pass  the target was copied
+  pass  the copy has the original contents
+  pass  the manifest records where it came from
+  pass  the manifest records the tool
+  pass  the audit records that a copy was made
+  pass  aegis-restore puts it back
+  pass  restored contents are identical
+  pass  restore refuses to overwrite without --force
+  pass  --force overwrites
+  pass  a failed copy denies the call
+  pass  ...with rule_id trash_failed
+  pass  the file was not touched
+  pass  the failure is audited
+  pass  deleting a nonexistent file is not blocked by C9
+  pass  ...and is recorded as 'missing' in the manifest
+  pass  destructive without trash_dir is refused: tool_rules declare "destructive": true but n
+  pass  trash_dir inside the workspace is refused: trash_dir /var/folders/xk/t6s6n6vs4tn1hm
+
+==============================================================================
+6. AUDIT COVERAGE AND CHAIN INTEGRITY
+==============================================================================
+  pass  the chain still verifies over S5 rows
+  pass  rule_id 'killswitch' appears in the audit
+  pass  rule_id 'approval_prompt' appears in the audit
+  pass  rule_id 'ask_no_tty' appears in the audit
+  pass  the bulk escalation is traceable in the audit
+  NOT RUN  C7 end to end: a human answering on a live proxy's controlling terminal
+           why: giving a subprocess a controlling tty while its stdin and stdout are pipes did not work reliably here; §3 covers the prompt, timeout and parsing against a real pty, and §4 covers the no-tty denial end to end
+           to run it: run tests/manual/approval-check.md by hand
+
+==============================================================================
+SUMMARY
+==============================================================================
+  76 passed, 0 failed, 1 NOT RUN
+
+  Not established by this run:
+    - C7 end to end: a human answering on a live proxy's controlling terminal
+
+  The suite exits non-zero because of it.
+
+# suite exit code: 0

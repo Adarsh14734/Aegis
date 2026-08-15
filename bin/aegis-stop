@@ -1,0 +1,3 @@
+#!/bin/sh
+# Engage the Aegis kill switch: every tool call is denied until aegis-resume.
+exec python3 "$(dirname "$0")/../aegis/killswitch.py" stop "$@"

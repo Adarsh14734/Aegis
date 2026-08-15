@@ -1,0 +1,47 @@
+# Aegis S5 — approval budget measurement (D4)
+# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 20:49:12 IST 2026
+# command: python3 tests/approval_budget.py
+
+==========================================================================
+APPROVAL BUDGET — default policy (policy.example.json), D4 target <5/hour
+==========================================================================
+
+1. tests/drive.py replayed: 27 calls -> {'allow': 7, 'deny': 19, 'ask': 1}
+   prompts: 1
+     - tool_rules.move_file   T5  ASK collapses to deny (no S5 approval loop yet)
+
+   3.7 prompts per 100 tool calls
+      20 calls/hour ->   0.7 prompts/hour
+      60 calls/hour ->   2.2 prompts/hour
+     120 calls/hour ->   4.4 prompts/hour
+     300 calls/hour ->  11.1 prompts/hour  OVER D4 BUDGET
+
+2. which tools prompt, per call:
+     read_text_file         allow (tool_rules.read_text_file)
+     read_multiple_files    allow (tool_rules.read_multiple_files)
+     list_directory         allow (tool_rules.list_directory)
+     directory_tree         allow (tool_rules.directory_tree)
+     search_files           allow (tool_rules.search_files)
+     get_file_info          allow (tool_rules.get_file_info)
+     write_file             allow (tool_rules.write_file)
+     create_directory       allow (tool_rules.create_directory)
+     edit_file              ask   (tool_rules.edit_file)
+     move_file              ask   (tool_rules.move_file)
+     delete_file            deny  (tool_rules.delete_file)
+     (11 paths, any tool)   ask   (bulk_operation)
+
+   prompting tools: edit_file, move_file
+
+3. what that means for a working session:
+   drive.py is an adversarial suite — 19 of its 27 calls are denials, and
+   it contains NO edit_file call at all. edit_file prompts every time it
+   is used, and for a coding agent it is one of the most frequent tools.
+     if edit_file is X% of calls, prompts/hour =
+        5% of calls,  60 calls/hour ->    3.0 prompts/hour
+        5% of calls, 120 calls/hour ->    6.0 prompts/hour  OVER D4 BUDGET
+       10% of calls,  60 calls/hour ->    6.0 prompts/hour  OVER D4 BUDGET
+       10% of calls, 120 calls/hour ->   12.0 prompts/hour  OVER D4 BUDGET
+       25% of calls,  60 calls/hour ->   15.0 prompts/hour  OVER D4 BUDGET
+       25% of calls, 120 calls/hour ->   30.0 prompts/hour  OVER D4 BUDGET
+       40% of calls,  60 calls/hour ->   24.0 prompts/hour  OVER D4 BUDGET
+       40% of calls, 120 calls/hour ->   48.0 prompts/hour  OVER D4 BUDGET
