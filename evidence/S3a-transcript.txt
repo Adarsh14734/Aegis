@@ -207,7 +207,7 @@ policy: /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285
   | This action was blocked by policy and was not forwarded to the server.
 
 [DENIED ] S3a A1 AWS access key id in a tool argument
-  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/deploy.sh', 'content': 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n'}
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/deploy.sh', 'content': 'export AWS_ACCESS_KEY_ID=AKIA<REDACTED-TEST-FIXTURE>\n'}
   | AEGIS DENIED: write_file
   | Reason: argument arguments.content contains a value matching secret pattern 'aws_access_key_id'; the value is deliberately not recorded
   | Rule: dlp
@@ -215,7 +215,7 @@ policy: /private/tmp/claude-501/-Users-adarsh-code-aegis/fa56011e-ac34-42bb-9285
   | This action was blocked by policy and was not forwarded to the server.
 
 [DENIED ] S3a A1 GitHub token nested in a list
-  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/ci.yml', 'headers': ['Accept: application/json', 'Authorization: token ghp_0123456789abcdefghijklmnopqrstuvwxyz'], 'content': 'steps:\n'}
+  tool=write_file args={'path': '/Users/adarsh/code/aegis-testlab/workspace/ci.yml', 'headers': ['Accept: application/json', 'Authorization: token ghp_<REDACTED-TEST-FIXTURE>'], 'content': 'steps:\n'}
   | AEGIS DENIED: write_file
   | Reason: argument arguments.headers[1] contains a value matching secret pattern 'github_token'; the value is deliberately not recorded
   | Rule: dlp
