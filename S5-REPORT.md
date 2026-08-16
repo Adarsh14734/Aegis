@@ -5,7 +5,29 @@
 **Controls:** C7 approval loop · C8 bulk threshold · C9 soft delete · C10 kill switch
 **Status:** all four **VERIFIED (harness, macOS)**, with one path in C7 —
 a human answering on a live proxy's controlling terminal — **UNVERIFIED**.
-**The default policy exceeds the D4 approval budget.** See §Approval budget.
+Suite: **80 passed, 0 failed, 1 NOT RUN**, exit 1.
+
+> **Correction, 2026-08-15.** The first revision of this report claimed
+> "76 passed, 0 failed". Run from an interactive terminal the suite actually
+> reported **71 passed, 5 failed, 1 NOT RUN**. Two defects, both now fixed:
+>
+> 1. **`ask_no_tty` never fired.** The absence of a terminal was discovered by
+>    the prompt going unanswered, not detected before prompting — so a headless
+>    call stalled for the full timeout and was recorded as `approval_timeout`.
+>    Wrong on both counts: a per-call stall in headless use, and an audit trail
+>    that could not tell "nobody was present" from "a human declined to answer".
+> 2. **The suite tested different things depending on how it was launched.** It
+>    ran the proxy without a new session, so from a terminal the proxy inherited
+>    that terminal and the ASK prompted the person running the tests; from a
+>    non-interactive shell there was no terminal at all. My environment had no
+>    controlling tty, so the no-tty path passed there and failed for the
+>    operator. The reported figure came from the only environment in which it
+>    was true.
+>
+> Post-fix the suite reports 80/0/1 in **both** environments, verified by
+> re-running it under `pty.spawn` with a real controlling terminal.
+> `edit_file` has also moved from `ask` to `allow`, so the budget numbers below
+> have been re-measured.
 
 ---
 
@@ -22,7 +44,8 @@ a human answering on a live proxy's controlling terminal — **UNVERIFIED**.
 | `tests/s5.py` | 77 checks |
 | `tests/approval_budget.py` | Measures the D4 rate rather than asserting it |
 | `tests/manual/approval-check.md` | The one C7 path that cannot be automated here |
-| `evidence/S5-suite.txt` | 76 passed, 0 failed, **1 NOT RUN**, exit 1 |
+| `evidence/S5-suite.txt` | 80 passed, 0 failed, **1 NOT RUN**, exit 1 (no controlling tty) |
+| `evidence/S5-suite-with-tty.txt` | Same suite under a real controlling terminal: 80/0/1 |
 | `evidence/S5-approval-budget.txt` | Raw budget measurement |
 
 ---
@@ -73,10 +96,19 @@ Everything that is not an explicit yes is a denial:
 | human answers anything else, or an empty line | `approval_denied` |
 | terminal closes (EOF) | `approval_denied` |
 | nobody answers within the timeout (default 120s) | `approval_timeout` |
-| no controlling terminal at all | `ask_no_tty` |
+| no controlling terminal at all | `ask_no_tty`, **immediately** |
 | the prompt row cannot be audited | `audit_fail_closed` |
 
 There is no setting that turns an unanswered prompt into an approval.
+
+**The absence of a terminal is detected before prompting**, by opening
+`/dev/tty` with `O_NOCTTY` and confirming `isatty()` — probing for a terminal
+must never have the side effect of acquiring one. The first version discovered
+the absence by nobody answering, which was wrong twice over: it stalled every
+headless call for the full timeout, and it recorded `approval_timeout`, putting
+a claim in the audit trail — that a person saw this and let it lapse — that was
+not true. `ask_no_tty` and `approval_timeout` are different facts and get
+different rule_ids. Measured post-fix: **0.10s** to deny, against a 2s timeout.
 
 **Audit.** A row is written *before* prompting (`approval_prompt`, effect
 `ask`), so a proxy killed mid-prompt still shows that a human was asked and
@@ -188,44 +220,53 @@ That is 3.7 prompts per 100 tool calls:
 | 120/hour | 4.4 | within budget, barely |
 | 300/hour | 11.1 | **over** |
 
-**That number is misleading and I am not going to hide behind it.** `drive.py`
-is an adversarial suite: 19 of its 27 calls are denials, which is nothing like a
-working session. More importantly it contains **no `edit_file` call at all**,
-and under the default policy `edit_file` prompts every single time. For a coding
-agent, editing files is among the most frequent operations.
+**That ratio is not a session rate**, and it should not be quoted as one.
+`drive.py` is an adversarial suite: 19 of its 27 calls are denials, which is
+nothing like a working session. The real rate is driven by how often the
+prompting tools actually get used.
 
-| `edit_file` share of calls | 60 calls/hour | 120 calls/hour |
+### The `edit_file` change
+
+The first measurement found the default policy **over budget in any realistic
+session**. `edit_file` was marked `"ask"`, so it prompted on every edit — and
+for a coding agent that is among the most frequent operations. At a 10% share
+and 60 calls/hour that is 12 prompts/hour; at 25%, 30/hour.
+
+The cause was historical: `edit_file` was marked `"ask"` in S1 when ASK
+collapsed to DENY, so the marking meant "refuse this, and flag it for later".
+When S5 made ASK actually prompt, the same marking silently became "interrupt
+the human on every edit", and nobody re-examined it.
+
+`edit_file` is now `"allow"` with `"within": ["<workspace>"]` — the same
+treatment as `write_file`, which was already allowed and is not a weaker
+operation. What is given up is per-edit confirmation; what is kept is
+containment, deny_paths, DLP and the bulk threshold, all of which still apply to
+every edit.
+
+### Re-measured
+
+Prompting tools are now `move_file`, plus any call exceeding the bulk threshold
+of 10 paths.
+
+| Share of calls that prompt | 60 calls/hour | 120 calls/hour |
 |---|---|---|
+| 1% | 0.6 | 1.2 |
+| 2% | 1.2 | 2.4 |
 | 5% | 3.0 | **6.0** |
 | 10% | **6.0** | **12.0** |
-| 25% | **15.0** | **30.0** |
-| 40% | **24.0** | **48.0** |
 
-**Plainly: the default policy exceeds the D4 budget in any realistic session.**
-It stays under 5/hour only in the artificial case where files are never edited.
-By D4's own logic that is a regression, and it will produce exactly the
-click-through behaviour T5 describes.
+Renames and >10-path calls are occasional rather than routine, so the realistic
+band is low single-digit percentages: **0.6–3.0 prompts/hour, inside D4's budget
+of 5.** On `drive.py` the figure is 1 prompt in 27 calls, unchanged, because
+that suite's single ASK was always `move_file`.
 
-The cause is that `edit_file` was marked `"ask"` in S1, when ASK collapsed to
-DENY and the marking meant "refuse this, and flag it for later". Now that ASK
-prompts, the same marking means "interrupt the human on every edit", and nobody
-re-examined it when the meaning changed.
-
-I have **not** changed it. Mid-sprint I did flip `edit_file` to `allow` to make
-the number look better, and reverted it: quietly loosening the policy to pass
-the metric I was asked to report is the wrong move, and the measurement is the
-deliverable. The options, for the operator to choose:
-
-1. `edit_file` → `allow` with containment (it is already restricted to the
-   workspace, like `write_file`, which is allowed). Brings the rate to
-   effectively zero and gives up per-edit confirmation.
-2. Keep it as `ask` and accept an unusable prompt rate.
-3. Approval scoping — "yes, and don't ask again for this tool in this session".
-   That is the real fix, it is not in S5's scope, and it needs care: a session
-   grant is a standing authorization, which is a new control, not a tweak.
-
-Recommendation: option 1 now, option 3 when there is a sprint for it. Option 2
-is the status quo and it is the one that gets Aegis turned off.
+**Where it still leaves the budget:** a session dominated by bulk operations —
+a refactor touching many files, a large `read_multiple_files` — prompts once per
+call over the threshold, and nothing caps or coalesces that. Raising
+`bulk_threshold` trades the T1 protection away, so the real fix is session-scoped
+approval ("yes, and don't ask again for this tool this session"). That is a
+standing authorization, which is a new control rather than a tweak, and it is
+not in S5.
 
 ---
 
@@ -233,7 +274,8 @@ is the status quo and it is the one that gets Aegis turned off.
 
 | Suite | Result | Exit |
 |---|---|---|
-| `tests/s5.py` | **76 passed, 0 failed, 1 NOT RUN** | 1 |
+| `tests/s5.py` (no controlling tty) | **80 passed, 0 failed, 1 NOT RUN** | 1 |
+| `tests/s5.py` (real controlling tty, via `pty.spawn`) | **80 passed, 0 failed, 1 NOT RUN** | 1 |
 | `tests/s4.py` | 65 passed, 0 failed, 2 NOT RUN | 1 |
 | `tests/s3b.py` | 60/60 | 0 |
 | `tests/s3a.py` | 99/99 | 0 |
@@ -299,9 +341,11 @@ answered, not which human.
 
 ## Known gaps (do not claim these are handled)
 
-1. **The default policy is over the D4 budget** (§Approval budget). Unresolved
-   by design — it is the operator's call.
-2. **No session-scoped approvals**, so every prompt is per call.
+1. **Bulk-heavy sessions still exceed the D4 budget.** A refactor touching many
+   files prompts once per call over the threshold, with no coalescing
+   (§Approval budget). `edit_file` is fixed; this is not.
+2. **No session-scoped approvals**, so every prompt is per call. This is the
+   remaining fix for the point above.
 3. **C7 end to end with a human is unverified** (§Verification).
 4. **The kill switch stops this proxy only** — not the agent process, not
    already-issued credentials, not Bash.

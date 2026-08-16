@@ -152,23 +152,63 @@ def _say(stream, text: str) -> None:
         pass
 
 
+def controlling_tty_available(tty_path: str = TTY_PATH) -> tuple[bool, str]:
+    """Is there a controlling terminal to prompt on? (available, why not).
+
+    Checked *before* anything is written, so the headless case is answered
+    immediately instead of after the timeout. O_NOCTTY because probing for a
+    terminal must never have the side effect of acquiring one.
+    """
+    try:
+        fd = os.open(tty_path, os.O_RDWR | os.O_NOCTTY)
+    except OSError as exc:
+        return False, f"{tty_path}: {exc.strerror}"
+    try:
+        if not os.isatty(fd):
+            return False, f"{tty_path} is not a terminal"
+    finally:
+        os.close(fd)
+    return True, ""
+
+
 def resolve(tool: str, rule_id: str, reason: str, paths,
             timeout: float = DEFAULT_TIMEOUT_SECONDS,
             tty_path: str = TTY_PATH) -> Resolution:
     """Open the controlling terminal and ask. Blocking; the proxy runs this in
     an executor so the server->client pump keeps flowing while a human thinks.
 
-    No controlling terminal means DENY. That is the headless case — a proxy
-    launched by a GUI client, a daemon, CI — and it must never silently become
-    an approval.
+    No controlling terminal means DENY, **immediately**. That is the headless
+    case — a proxy launched by a GUI client, a daemon, CI — and it must never
+    silently become an approval.
+
+    The absence is detected before prompting rather than discovered by nobody
+    answering. Two reasons, and the second is the one that matters:
+
+      - waiting out a 120s timeout on every ASK makes headless operation look
+        like a hang, once per call;
+      - "nobody was present to ask" and "a human was asked and did not answer"
+        are different events. Recording both as approval_timeout would put a
+        claim in the audit trail — that a person saw this and let it lapse —
+        which is not true. They get different rule_ids because they are
+        different facts.
     """
+    available, why = controlling_tty_available(tty_path)
+    if not available:
+        return Resolution(
+            False, "ask_no_tty", "none",
+            f"no controlling terminal ({why}), so no human could be asked; "
+            f"denied immediately without waiting {int(timeout)}s, and recorded "
+            f"as nobody-present rather than as an unanswered prompt",
+        )
+
     try:
         stream = open(tty_path, "r+b", buffering=0)
     except OSError as exc:
+        # Raced between the probe and the open — still nobody to ask.
         return Resolution(
             False, "ask_no_tty", "none",
-            f"no controlling terminal ({tty_path}: {exc.strerror}), so no human "
-            f"could be asked; denying rather than assuming consent",
+            f"controlling terminal disappeared ({tty_path}: {exc.strerror}); "
+            f"denying rather than assuming consent",
         )
     try:
         return prompt_on(stream, tool, rule_id, reason, paths, timeout)

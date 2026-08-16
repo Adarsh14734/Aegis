@@ -82,19 +82,28 @@ for tool in tools:
 d = pol.evaluate("read_text_file", {"paths": [str(WS / f"f{i}") for i in range(11)]}, WS)
 print(f"     {'(11 paths, any tool)':<22} {d.effect.value:<5} ({d.rule_id})")
 
-print(f"\n   prompting tools: {', '.join(prompting) or 'none'}")
+print(f"\n   prompting tools: {', '.join(prompting) or 'none'}"
+      f"  (+ any call over the bulk threshold of {pol.bulk_threshold} paths)")
+
 print("\n3. what that means for a working session:")
-print("   drive.py is an adversarial suite — 19 of its 27 calls are denials, and")
-print("   it contains NO edit_file call at all. edit_file prompts every time it")
-print("   is used, and for a coding agent it is one of the most frequent tools.")
-for share in (5, 10, 25, 40):
-    n100 = share  # share% of calls are edit_file -> that many prompts per 100
+print("   drive.py is an adversarial suite — 19 of its 27 calls are denials — so")
+print("   its ratio is not a session rate. The rate is driven by how often the")
+print("   prompting tools above actually get used. Derived, not assumed:")
+print(f"\n     prompts/hour = (share of calls that are {' or '.join(prompting) or 'prompting'}")
+print(f"                     or exceed {pol.bulk_threshold} paths) x calls per hour\n")
+print(f"     {'share':>7} | {'60 calls/hr':>12} | {'120 calls/hr':>13}")
+print(f"     {'-'*7}-+-{'-'*12}-+-{'-'*13}")
+for share in (1, 2, 5, 10, 25):
+    row = f"     {share:>6}% |"
     for rate in (60, 120):
-        n = n100 / 100 * rate
-        if share == 5 and rate == 60:
-            print("     if edit_file is X% of calls, prompts/hour =")
-        print(f"       {share:>2}% of calls, {rate:>3} calls/hour -> {n:6.1f} prompts/hour"
-              f"{'  OVER D4 BUDGET' if n > 5 else ''}")
+        n = share / 100 * rate
+        row += f" {n:>7.1f}{'  OVER' if n > 5 else '      '} |" if rate == 60 else \
+               f" {n:>8.1f}{'  OVER' if n > 5 else '      '}"
+    print(row)
+print("\n   Renames and >10-path calls are occasional, not routine: single-digit")
+print("   percentages are the realistic band, which keeps this inside D4's")
+print("   budget of 5/hour. It leaves the budget if a session is dominated by")
+print("   bulk operations, and nothing here caps that — see S5-REPORT.md.")
 
 import shutil  # noqa: E402
 

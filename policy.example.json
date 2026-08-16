@@ -17,7 +17,7 @@
     "list_allowed_directories":   {"effect": "allow"},
     "write_file":                 {"effect": "allow", "within": ["<workspace>"]},
     "create_directory":           {"effect": "allow", "within": ["<workspace>"]},
-    "edit_file":                  {"effect": "ask",   "within": ["<workspace>"]},
+    "edit_file":                  {"effect": "allow", "within": ["<workspace>"]},
     "move_file":                  {"effect": "ask",   "within": ["<workspace>"], "destructive": true},
     "delete_file":                {"effect": "deny",  "destructive": true}
   },

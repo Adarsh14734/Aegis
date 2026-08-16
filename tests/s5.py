@@ -130,6 +130,20 @@ def load(**over):
 
 
 def run_proxy(calls, env=None, timeout=60):
+    """Run the proxy in a NEW SESSION, so it has no controlling terminal.
+
+    Without os.setsid() this suite tests different things depending on how it
+    was launched. From a terminal the proxy inherits that terminal, so an ASK
+    prompts the person running the tests — who is not answering — and denies on
+    timeout as approval_timeout. From a non-interactive shell there is no
+    terminal, so the same call denies as ask_no_tty. The suite passed in the
+    second environment and failed five checks in the first.
+
+    A new session has no controlling tty until one is explicitly acquired, so
+    this pins the headless path in both. It also stops the suite from writing
+    approval prompts into the tester's terminal, which it should never have
+    been doing. §3 covers the terminal-present paths against a real pty.
+    """
     frames = "\n".join(json.dumps({
         "jsonrpc": "2.0", "id": i, "method": "tools/call",
         "params": {"name": name, "arguments": args},
@@ -137,7 +151,7 @@ def run_proxy(calls, env=None, timeout=60):
     return subprocess.run(
         [sys.executable, str(PROXY), "--", sys.executable, str(MOCK)],
         input=frames, capture_output=True, text=True,
-        env=env or ENV, timeout=timeout,
+        env=env or ENV, timeout=timeout, preexec_fn=os.setsid,
     )
 
 
@@ -337,11 +351,30 @@ check(b"TIMED OUT" in seen, "the terminal is told it timed out")
 
 rule("4. C7 NO CONTROLLING TERMINAL — end to end through the proxy")
 
+available, why = approval.controlling_tty_available()
+print(f"  this process: controlling tty available = {available}"
+      f"{'' if available else f' ({why})'}")
+print("  the proxy below is run with os.setsid(), so it has none either way\n")
+
+check(approval.controlling_tty_available("/dev/null")[0] is False,
+      "a non-terminal device is not mistaken for a terminal",
+      str(approval.controlling_tty_available("/dev/null")))
+
 os.remove(DB)
+started = time.time()
 p = run_proxy([("move_file", {"source": str(WS / "config.txt"),
                               "destination": str(WS / "moved.txt")})])
+elapsed = time.time() - started
 check('"isError": true' in p.stdout, "an ASK with no tty is denied")
 check("ask_no_tty" in p.stdout, "...with rule_id ask_no_tty", p.stdout[:200])
+# The point of detecting absence up front: no stall, and an audit record that
+# says nobody was there rather than that somebody declined to answer.
+check(elapsed < POLICY_DOC["ask_timeout_seconds"],
+      f"...denied immediately, not after the {POLICY_DOC['ask_timeout_seconds']}s "
+      f"timeout (took {elapsed:.2f}s)", f"{elapsed:.2f}s")
+check("approval_timeout" not in p.stdout,
+      "...and NOT recorded as a timeout — nobody present is a different event",
+      p.stdout[:200])
 check("not attempted" in p.stdout.lower() or "was not forwarded" in p.stdout,
       "the model is told the call did not run", p.stdout[:220])
 check(not (WS / "moved.txt").exists(), "the server never performed the move")
@@ -351,6 +384,9 @@ check(any(r[3] == "approval_prompt" for r in rows),
 check(any(r[3] == "ask_no_tty" for r in rows), "the resolution is audited", str(rows))
 check(any("no human could be asked" in r[4] for r in rows),
       "the audit says why it was denied", str(rows))
+check(not any(r[3] == "approval_timeout" for r in rows),
+      "no approval_timeout row: the audit distinguishes absent from unanswered",
+      str([r[3] for r in rows]))
 
 p = run_proxy([("read_many", {"paths": many})])
 check("bulk_operation" in p.stdout or "ask_no_tty" in p.stdout,

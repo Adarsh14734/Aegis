@@ -1,7 +1,7 @@
-# Aegis S5 — suite run WITHOUT a controlling terminal
-# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 23:14:24 IST 2026
-# The proxy is spawned with os.setsid() so the headless path is pinned
-# regardless of how this suite was launched.
+# Aegis S5 — the SAME suite run WITH a real controlling terminal
+# host: macOS 26.5.1, Python 3.14.3, Sat Aug 15 23:14:39 IST 2026
+# Launched via pty.spawn(), reproducing an interactive terminal run —
+# the environment in which the previous revision reported 71/5/1.
 
 
 ==============================================================================
@@ -60,13 +60,13 @@
 ==============================================================================
 4. C7 NO CONTROLLING TERMINAL — end to end through the proxy
 ==============================================================================
-  this process: controlling tty available = False (/dev/tty: Device not configured)
+  this process: controlling tty available = True
   the proxy below is run with os.setsid(), so it has none either way
 
   pass  a non-terminal device is not mistaken for a terminal
   pass  an ASK with no tty is denied
   pass  ...with rule_id ask_no_tty
-  pass  ...denied immediately, not after the 2s timeout (took 0.09s)
+  pass  ...denied immediately, not after the 2s timeout (took 0.11s)
   pass  ...and NOT recorded as a timeout — nobody present is a different event
   pass  the model is told the call did not run
   pass  the server never performed the move
@@ -123,5 +123,3 @@ SUMMARY
     - C7 end to end: a human answering on a live proxy's controlling terminal
 
   The suite exits non-zero because of it.
-
-# suite exit code: 0
