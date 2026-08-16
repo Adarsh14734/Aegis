@@ -1,0 +1,21 @@
+[package]
+name = "aegis-ui"
+version = "0.6.0"
+description = "Aegis desktop viewer"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# bundled: no dependency on the host's libsqlite3, and the same engine the
+# audit store was written by.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

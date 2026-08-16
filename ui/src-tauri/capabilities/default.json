@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The viewer needs nothing but its own two commands. No filesystem, shell, http or dialog plugins are granted: every read happens in Rust, behind snapshot().",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "aegis-ui",
+  "private": true,
+  "version": "0.6.0",
+  "type": "module",
+  "description": "Aegis S6 desktop viewer. Reads the audit database and policy file; never writes to either.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "npx tsc src/lib/translate.ts --outDir .test-build --module esnext --target es2020 --moduleResolution bundler --skipLibCheck && node --test src/lib/translate.test.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

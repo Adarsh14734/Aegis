@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/broadsheet-dc4056d9-efc5-4c1f-9e43-9c20a726e47f/styles.css">
+<script src="_ds/broadsheet-dc4056d9-efc5-4c1f-9e43-9c20a726e47f/_ds_bundle.js"></script>
+<style>
+:root{
+  --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+  --ink-blocked:#8c1c2b;
+}
+body{margin:0;background:var(--color-bg);font-family:var(--font-ui);-webkit-font-smoothing:antialiased}
+.btn,.tag,.table,.card-kicker,.card-title{font-family:var(--font-ui)}
+a{color:var(--color-accent-700);text-decoration:none}
+a:hover{color:var(--color-accent-600)}
+</style>
+</helmet>
+<div style="min-height: 100vh; padding: 56px 60px 72px; display: flex; flex-direction: column; align-items: center; gap: 28px; font-family: var(--font-ui); color: var(--color-text); border-width: 1px; border-style: solid; border-color: #000000; width: 823px; height: 978px">
+
+<div style="width:1000px;max-width:100%;display:flex;flex-direction:column;gap:6px">
+<div style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--color-accent)">Aegis · four screens</div>
+<div style="font-size:14px;line-height:1.5;max-width:64ch;color:color-mix(in srgb, var(--color-text) 65%, transparent)">One window, System-Settings posture: a left list, one subject per screen, no charts. Cyan carries anything you can click; a deep red appears only where something was blocked. Serif for headlines and numbers, system sans for everything else. Click the list to move between screens.</div>
+</div>
+
+<div style="width:1000px;max-width:100%;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 0 0 1px color-mix(in srgb, var(--color-text) 18%, transparent), 0 18px 44px color-mix(in srgb, var(--color-text) 22%, transparent);display:flex;height:700px">
+
+  <nav style="width:236px;flex:none;background:var(--color-surface);display:flex;flex-direction:column;padding:14px 0 0">
+    <div style="padding:0 16px 22px">
+      <x-import component-from-global-scope="MacTrafficLights" from="./macos-window.jsx" hint-size="60px,16px"></x-import>
+    </div>
+    <div style="padding:0 12px 10px 16px;font-family:var(--font-heading);font-weight:600;font-size:19px;letter-spacing:-0.01em">Aegis</div>
+    <div style="padding:0 10px;display:flex;flex-direction:column;gap:2px">
+      <sc-for list="{{ navItems }}" as="item" hint-placeholder-count="4">
+        <sc-if value="{{ item.selected }}" hint-placeholder-val="{{ false }}">
+          <button type="button" onClick="{{ item.go }}" style="appearance:none;border:0;cursor:pointer;text-align:left;font-family:var(--font-ui);font-weight:590;font-size:13px;padding:6px 10px;border-radius:var(--radius-md);display:flex;align-items:center;justify-content:space-between;gap:10px;background:color-mix(in srgb, var(--color-text) 9%, transparent);color:var(--color-accent-700)">
+            <span>{{ item.label }}</span>
+            <span style="font-size:12px;font-variant-numeric:tabular-nums;opacity:0.75">{{ item.badge }}</span>
+          </button>
+        </sc-if>
+        <sc-if value="{{ item.unselected }}" hint-placeholder-val="{{ true }}">
+          <button type="button" onClick="{{ item.go }}" style="appearance:none;border:0;cursor:pointer;text-align:left;font-family:var(--font-ui);font-weight:590;font-size:13px;padding:6px 10px;border-radius:var(--radius-md);display:flex;align-items:center;justify-content:space-between;gap:10px;background:transparent;color:var(--color-text)" style-hover="background:color-mix(in srgb, var(--color-text) 6%, transparent)">
+            <span>{{ item.label }}</span>
+            <span style="font-size:12px;font-variant-numeric:tabular-nums;opacity:0.75">{{ item.badge }}</span>
+          </button>
+        </sc-if>
+      </sc-for>
+    </div>
+    <div style="margin-top:auto;padding:18px 16px;font-size:12px;line-height:1.6;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Running since 8:02 this morning</div>
+  </nav>
+
+  <main style="flex:1;overflow:auto;padding:30px 42px 36px;background:#fff">
+
+    <sc-if value="{{ isStatus }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;flex-direction:column;gap:24px;max-width:640px">
+        <h1 style="margin:0;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Status</h1>
+        <p style="margin:0;font-family:var(--font-heading);font-weight:600;font-size:25px;line-height:1.3;letter-spacing:-0.01em;text-wrap:pretty;max-width:26ch">Aegis is watching your files. One request is waiting for you; nothing else needs doing.</p>
+        <div style="display:flex;align-items:flex-end;gap:52px">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <div style="font-family:var(--font-heading);font-weight:600;font-size:58px;line-height:0.95;font-variant-numeric:tabular-nums;color:var(--color-accent-700)">{{ waitingCount }}</div>
+            <div style="font-size:12px;color:var(--color-accent-700)">Waiting for your answer</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;padding-bottom:4px">
+            <div style="font-family:var(--font-heading);font-weight:600;font-size:24px;line-height:1;font-variant-numeric:tabular-nums">{{ actionsToday }}</div>
+            <div style="font-size:12px;color:color-mix(in srgb, var(--color-text) 58%, transparent)">Things agents did today</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;padding-bottom:4px">
+            <sc-if value="{{ anyBlocked }}" hint-placeholder-val="{{ true }}">
+              <div style="font-family:var(--font-heading);font-weight:600;font-size:24px;line-height:1;font-variant-numeric:tabular-nums;color:var(--ink-blocked)">{{ blockedToday }}</div>
+            </sc-if>
+            <sc-if value="{{ noneBlocked }}" hint-placeholder-val="{{ false }}">
+              <div style="font-family:var(--font-heading);font-weight:600;font-size:24px;line-height:1;font-variant-numeric:tabular-nums">{{ blockedToday }}</div>
+            </sc-if>
+            <div style="font-size:12px;color:color-mix(in srgb, var(--color-text) 58%, transparent)">Stopped by Aegis</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:0;margin-top:4px">
+          <sc-for list="{{ statusRows }}" as="row" hint-placeholder-count="3">
+            <div style="display:flex;gap:24px;padding:10px 0;border-bottom:1px solid color-mix(in srgb, var(--color-text) 8%, transparent)">
+              <div style="width:170px;flex:none;font-size:13px;color:color-mix(in srgb, var(--color-text) 60%, transparent)">{{ row.label }}</div>
+              <div style="font-size:13px;line-height:1.5">{{ row.value }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isActivity }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:22px;max-width:700px">
+        <h1 style="margin:0;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Activity</h1>
+        <p style="margin:0;font-size:14px;line-height:1.55;max-width:56ch">Everything the agents on this machine did, in the order it happened.</p>
+        <div style="display:flex;flex-direction:column">
+          <sc-for list="{{ activity }}" as="row" hint-placeholder-count="9">
+            <div style="display:flex;gap:22px;align-items:baseline;padding:11px 0;border-bottom:1px solid color-mix(in srgb, var(--color-text) 8%, transparent)">
+              <div style="width:74px;flex:none;font-size:13px;font-variant-numeric:tabular-nums;color:color-mix(in srgb, var(--color-text) 55%, transparent)">{{ row.time }}</div>
+              <sc-if value="{{ row.blocked }}" hint-placeholder-val="{{ false }}">
+                <div style="flex:1;font-size:14px;line-height:1.5;color:var(--ink-blocked)">{{ row.text }}</div>
+                <span class="tag" style="flex:none;color:var(--ink-blocked);background:color-mix(in srgb, var(--ink-blocked) 9%, transparent)">Blocked</span>
+              </sc-if>
+              <sc-if value="{{ row.waiting }}" hint-placeholder-val="{{ false }}">
+                <div style="flex:1;font-size:14px;line-height:1.5;color:var(--color-accent-700)">{{ row.text }}</div>
+              </sc-if>
+              <sc-if value="{{ row.plain }}" hint-placeholder-val="{{ true }}">
+                <div style="flex:1;font-size:14px;line-height:1.5">{{ row.text }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="font-size:13px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Older days are kept for two weeks.</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isApprovals }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:22px;max-width:620px">
+        <h1 style="margin:0;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Approvals</h1>
+        <sc-if value="{{ hasApproval }}" hint-placeholder-val="{{ true }}">
+          <div class="card elev-sm" style="background:var(--color-surface);padding:26px;gap:20px;border-radius:var(--radius-lg)">
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div class="card-kicker">Waiting for you</div>
+              <div style="font-family:var(--font-heading);font-weight:600;font-size:22px;line-height:1.3;letter-spacing:-0.01em;text-wrap:pretty">Claude wants to read four files in your Finance folder</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:11px;letter-spacing:0.09em;text-transform:uppercase;color:color-mix(in srgb, var(--color-text) 55%, transparent)">The files</div>
+              <sc-for list="{{ approvalFiles }}" as="f" hint-placeholder-count="4">
+                <div style="font-size:14px;line-height:1.55">{{ f }}</div>
+              </sc-for>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:11px;letter-spacing:0.09em;text-transform:uppercase;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Why</div>
+              <div style="font-size:14px;line-height:1.6">You asked it to write a summary of last quarter's invoices. It will read the files and will not change or send them.</div>
+            </div>
+            <div style="display:flex;gap:10px;padding-top:4px">
+              <button type="button" class="btn btn-primary" onClick="{{ allow }}">Let it read them</button>
+              <button type="button" class="btn btn-secondary" onClick="{{ deny }}">Don't let it</button>
+            </div>
+          </div>
+          <div style="font-size:14px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Nothing else is waiting. Aegis asks once per folder, then remembers your answer for the rest of the day.</div>
+        </sc-if>
+        <sc-if value="{{ noApproval }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <p style="margin:0;font-family:var(--font-heading);font-weight:600;font-size:22px;line-height:1.3">{{ approvalResult }}</p>
+            <div style="font-size:14px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Nothing is waiting for you.</div>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isFlow }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:22px;max-width:760px">
+        <h1 style="margin:0;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Data flow</h1>
+        <p style="margin:0;font-size:14px;line-height:1.55;max-width:56ch">What left this machine today, and where it went.</p>
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width:34%">What left</th>
+              <th style="width:22%">Where it went</th>
+              <th style="width:30%">Why</th>
+              <th style="width:14%;text-align:right">How much</th>
+            </tr>
+          </thead>
+          <tbody>
+            <sc-for list="{{ flows }}" as="row" hint-placeholder-count="5">
+              <tr>
+                <td style="font-size:14px">{{ row.what }}</td>
+                <td style="font-size:14px">{{ row.where }}</td>
+                <td style="font-size:14px;color:color-mix(in srgb, var(--color-text) 70%, transparent)">{{ row.why }}</td>
+                <td style="font-size:14px;text-align:right;font-variant-numeric:tabular-nums">{{ row.size }}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+        <div style="font-size:14px;line-height:1.6;color:color-mix(in srgb, var(--color-text) 60%, transparent);max-width:56ch">Nothing else has been sent anywhere. Anything Aegis stopped never left the machine, so it isn't listed here.</div>
+      </div>
+    </sc-if>
+
+  </main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;screen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;status&quot;,&quot;activity&quot;,&quot;approvals&quot;,&quot;flow&quot;],&quot;default&quot;:&quot;status&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Screen&quot;},&quot;actionsToday&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:128,&quot;min&quot;:0,&quot;max&quot;:999,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Numbers&quot;},&quot;waitingCount&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:1,&quot;min&quot;:0,&quot;max&quot;:9,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Numbers&quot;},&quot;blockedToday&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:2,&quot;min&quot;:0,&quot;max&quot;:9,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Numbers&quot;}}">
+class Component extends DCLogic {
+  state = { screen: null, approval: 'pending' };
+
+  screen() { return this.state.screen ?? this.props.screen ?? 'status'; }
+
+  renderVals() {
+    const cur = this.screen();
+    const waiting = this.state.approval === 'pending' ? (this.props.waitingCount ?? 1) : 0;
+    const blocked = this.props.blockedToday ?? 2;
+    const items = [
+      ['status', 'Status', ''],
+      ['activity', 'Activity', ''],
+      ['approvals', 'Approvals', waiting ? String(waiting) : ''],
+      ['flow', 'Data flow', ''],
+    ];
+    return {
+      navItems: items.map(([id, label, badge]) => ({
+        label, badge, id,
+        selected: cur === id,
+        unselected: cur !== id,
+        go: () => this.setState({ screen: id }),
+      })),
+      isStatus: cur === 'status',
+      isActivity: cur === 'activity',
+      isApprovals: cur === 'approvals',
+      isFlow: cur === 'flow',
+      actionsToday: this.props.actionsToday ?? 128,
+      waitingCount: waiting,
+      blockedToday: blocked,
+      anyBlocked: blocked > 0,
+      noneBlocked: blocked === 0,
+      statusRows: [
+        { label: 'Agents connected', value: 'Claude, Cursor' },
+        { label: 'Folders it watches', value: 'Documents, Projects, Desktop' },
+        { label: 'Folders it never opens', value: 'Finance, Keys, Mail' },
+        { label: 'Last check', value: 'A moment ago' },
+      ],
+      activity: [
+        { time: '4:12 pm', text: 'Claude read 8 files in Projects/Atlas.' },
+        { time: '4:09 pm', text: 'Aegis stopped Claude from opening your saved passwords file.', kind: 'blocked' },
+        { time: '3:54 pm', text: 'Claude asked to read four files in Finance. Still waiting for you.', kind: 'waiting' },
+        { time: '3:31 pm', text: 'Cursor changed 3 files in Projects/Atlas and saved a copy of each.' },
+        { time: '2:47 pm', text: 'Claude sent a summary of your notes to Anthropic.' },
+        { time: '1:20 pm', text: 'Aegis stopped Cursor from sending a settings file off this machine.', kind: 'blocked' },
+        { time: '12:58 pm', text: 'Claude read 2 files on your Desktop.' },
+        { time: '11:04 am', text: 'You let Claude read the Projects folder for the rest of today.' },
+        { time: '8:02 am', text: 'Aegis started watching.' },
+      ].map(r => ({
+        ...r,
+        blocked: r.kind === 'blocked',
+        waiting: r.kind === 'waiting',
+        plain: !r.kind,
+      })),
+      approvalFiles: [
+        'Invoices — April.numbers',
+        'Invoices — May.numbers',
+        'Invoices — June.numbers',
+        'Quarter notes.txt',
+      ],
+      hasApproval: this.state.approval === 'pending',
+      noApproval: this.state.approval !== 'pending',
+      approvalResult: this.state.approval === 'allowed'
+        ? 'Claude can now read those four files.'
+        : 'Claude was not given those files.',
+      allow: () => this.setState({ approval: 'allowed' }),
+      deny: () => this.setState({ approval: 'denied' }),
+      flows: [
+        { what: 'A summary of your notes', where: 'Anthropic (Claude)', why: 'You asked for a summary', size: '82 KB' },
+        { what: 'Three lines of code', where: 'Anthropic (Claude)', why: 'You asked what a function did', size: '4 KB' },
+        { what: 'The names of files in Projects', where: 'Anthropic (Claude)', why: 'Claude was looking for a file', size: '2 KB' },
+        { what: 'A crash report about Aegis', where: 'Aegis (this app)', why: 'Aegis quit unexpectedly last night', size: '19 KB' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
