@@ -7,6 +7,7 @@ verification transcript.
 """
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -47,6 +48,17 @@ def handle(msg: dict) -> dict | None:
             elif name == "write_file":
                 Path(path).write_text(args.get("content", ""))
                 out = f"MOCK SERVER WROTE {path}"
+            elif name == "move_file":
+                # Really performs the move. Previously this fell through to the
+                # generic branch, which reported "EXECUTED move_file on " — an
+                # empty path, because a move names source/destination and not
+                # path — and moved nothing. That made this server quietly
+                # *disobedient* for one tool, which undercuts the only reason
+                # it exists: if a call does not take effect with this server
+                # downstream, that must be because Aegis stopped it.
+                src, dst = args.get("source", ""), args.get("destination", "")
+                shutil.move(src, dst)
+                out = f"MOCK SERVER MOVED {src} -> {dst}"
             else:
                 out = f"MOCK SERVER EXECUTED {name} on {path}"
         except Exception as exc:  # noqa: BLE001

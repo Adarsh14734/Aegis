@@ -1,5 +1,9 @@
 # Manual check: a human approving on a live proxy's terminal (S5 / C7)
 
+**Last run: 2026-08-16, macOS, by Adarsh — all three paths passed.** Recorded in
+S5-REPORT.md as VERIFIED (manual, macOS). Rerun it when `approval.py`,
+`proxy.py`'s ASK handling, or this document changes.
+
 `tests/s5.py` covers the prompt, the timeout, the answer parsing and the
 resolver identity against a **real pty** (§3), and covers the no-terminal
 denial end to end through the proxy (§4). What it does not cover is the two
@@ -60,12 +64,29 @@ command's captured output:
 Check all four:
 
 - the prompt is on your terminal, and **not** in the printed JSON-RPC reply
-- answering `y` prints `APPROVED`, the reply is not an error, and
-  `/tmp/s5-manual/workspace/moved.txt` now exists
+- answering `y` prints `APPROVED` and the reply contains
+  `MOCK SERVER MOVED /tmp/s5-manual/workspace/config.txt -> …/moved.txt`,
+  which is the mock server confirming it received and performed the call.
+  `/tmp/s5-manual/workspace/moved.txt` now exists and `config.txt` is gone
 - rerun and answer `n`: the reply is `AEGIS DENIED`, rule `approval_denied`,
-  and no file moves
+  `isError` is true, and the reply contains no `MOCK SERVER` line at all —
+  the call never reached the server
 - rerun and answer nothing for 30s: `TIMED OUT — denied`, rule
-  `approval_timeout`, and no file moves
+  `approval_timeout`, again with no `MOCK SERVER` line
+
+After an approved run, recreate the fixture before rerunning:
+
+```bash
+printf 'speed = 40\n' > /tmp/s5-manual/workspace/config.txt && rm -f /tmp/s5-manual/workspace/moved.txt
+```
+
+> **Note.** Until 2026-08-16 this step told you to confirm `moved.txt` exists,
+> which could never pass: `tests/mock_fs_server.py` did not implement
+> `move_file` and returned `MOCK SERVER EXECUTED move_file on ` with an empty
+> path, moving nothing. The mock now performs the move. The check to trust is
+> the presence or absence of the `MOCK SERVER` line — that is what
+> distinguishes "Aegis forwarded it" from "Aegis stopped it", and it is the
+> only thing this procedure is really testing.
 
 **3. Confirm the audit recorded who resolved it.**
 
@@ -85,7 +106,12 @@ rm -rf /tmp/s5-manual
 
 ## Recording the result
 
-If it passes, note the date in S5-REPORT.md and move the C7 end-to-end row from
-UNVERIFIED to VERIFIED (manual, macOS) — a tier below VERIFIED (harness),
-because it is not repeatable without a human. It stays UNVERIFIED until someone
-actually does this.
+Note the date in S5-REPORT.md and set the C7 end-to-end row to VERIFIED
+(manual, macOS) — a tier below VERIFIED (harness), because it is not repeatable
+without a human and so cannot guard against regression on its own. Done for
+2026-08-16; a later change to the approval path puts it back to UNVERIFIED
+until someone reruns this.
+
+`tests/s5.py` still reports this as NOT RUN and still exits non-zero, which is
+correct: the automated suite does not cover it, and the suite should report what
+it ran rather than what a human once did.

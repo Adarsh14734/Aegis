@@ -108,7 +108,7 @@ CASES = [
     ("T1  destructive tool denied outright",
      "delete_file", {"path": str(WS / "config.txt")}),
 
-    ("T5  ASK collapses to deny (no S5 approval loop yet)",
+    ("T5  ASK blocks for approval; headless, so it denies (S5)",
      "move_file", {"source": str(WS / "config.txt"), "destination": str(WS / "moved.txt")}),
 
     ("T3  unknown tool from a poisoned server",

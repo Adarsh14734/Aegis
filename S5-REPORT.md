@@ -3,8 +3,9 @@
 **Sprint:** S5
 **Date:** 2026-08-15
 **Controls:** C7 approval loop · C8 bulk threshold · C9 soft delete · C10 kill switch
-**Status:** all four **VERIFIED (harness, macOS)**, with one path in C7 —
-a human answering on a live proxy's controlling terminal — **UNVERIFIED**.
+**Status:** all four **VERIFIED (harness, macOS)**. The one path the harness
+cannot reach — a human answering on a live proxy's controlling terminal — is
+**VERIFIED (manual, macOS), 2026-08-16**.
 Suite: **80 passed, 0 failed, 1 NOT RUN**, exit 1.
 
 > **Correction, 2026-08-15.** The first revision of this report claimed
@@ -41,8 +42,9 @@ Suite: **80 passed, 0 failed, 1 NOT RUN**, exit 1.
 | `aegis/policy.py` | Kill switch first, bulk threshold, `destructive`, ASK stops collapsing |
 | `aegis/proxy.py` | Resolve ASK, stage trash, both before the audit write and the forward |
 | `bin/aegis-stop`, `bin/aegis-resume`, `bin/aegis-restore` | CLI entry points |
-| `tests/s5.py` | 77 checks |
+| `tests/s5.py` | 81 checks (80 automated + 1 recorded NOT RUN) |
 | `tests/approval_budget.py` | Measures the D4 rate rather than asserting it |
+| `tests/mock_fs_server.py` | `move_file` now actually moves — it silently did nothing before |
 | `tests/manual/approval-check.md` | The one C7 path that cannot be automated here |
 | `evidence/S5-suite.txt` | 80 passed, 0 failed, **1 NOT RUN**, exit 1 (no controlling tty) |
 | `evidence/S5-suite-with-tty.txt` | Same suite under a real controlling terminal: 80/0/1 |
@@ -288,14 +290,30 @@ consequence, resolver identity, and every answer form (`y`, `yes`, `Y`, `n`,
 empty, garbage, silence). §4 covers the no-terminal denial end to end through
 the proxy, including the audit rows.
 
-**Not established: a human answering on a live proxy's controlling terminal.**
-Giving a subprocess a controlling tty while its stdin and stdout are pipes —
-`setsid` then `TIOCSCTTY` in `preexec_fn` — hung with no output across several
-attempts on macOS 26.5.1 / Python 3.14.3. Rather than ship a flaky test or fake
-the terminal, it is `tests/manual/approval-check.md` and the suite records it
-via `mark_unverified()`, printing it in the summary and exiting non-zero. A
-skipped check that reads as green is the failure mode this project keeps
-finding in itself.
+**A human answering on a live proxy's controlling terminal — VERIFIED (manual,
+macOS), 2026-08-16.** The harness cannot reach it: giving a subprocess a
+controlling tty while its stdin and stdout are pipes (`setsid` then `TIOCSCTTY`
+in `preexec_fn`) hung with no output across several attempts on macOS 26.5.1 /
+Python 3.14.3. Rather than ship a flaky test or fake the terminal it is a
+by-hand procedure, `tests/manual/approval-check.md`, run on 2026-08-16 with all
+three paths confirmed:
+
+| Answer | Observed |
+|---|---|
+| `y` | prompt on the controlling terminal and **not** in the JSON-RPC reply; `APPROVED`; call forwarded; audit rows `approval_prompt` then `approval_granted` |
+| `n` | `DENIED`, `rule_id: approval_denied`, `isError: true`, never forwarded |
+| nothing, 30s | `TIMED OUT — denied`, `rule_id: approval_timeout`, reason `nobody answered within 30s (resolved by: timeout)`, never forwarded |
+
+The audit distinguishes who resolved each one: an answered prompt records the
+terminal identity — `adarsh@Adarshs-MacBook-Air.local via /dev/tty` — and an
+unanswered one records `timeout`. That is the distinction C7 is built around,
+and it now has evidence on both sides of it rather than only the harness's pty.
+
+**Tier: VERIFIED (manual, macOS)** — one rung below VERIFIED (harness), because
+a procedure a human has to run cannot guard against regression. A change to
+`approval.py` or to `proxy.py`'s ASK handling puts this back to UNVERIFIED until
+someone reruns it. `tests/s5.py` still reports it as NOT RUN and still exits
+non-zero: the suite should report what it ran, not what a human once did.
 
 **Tier: VERIFIED (harness, macOS)** for all four controls, per S1's definition —
 real macOS hardware, real proxy, real store and verifier, raw output captured,
@@ -346,7 +364,9 @@ answered, not which human.
    (§Approval budget). `edit_file` is fixed; this is not.
 2. **No session-scoped approvals**, so every prompt is per call. This is the
    remaining fix for the point above.
-3. **C7 end to end with a human is unverified** (§Verification).
+3. **C7 end to end depends on a manual procedure** — VERIFIED (manual, macOS)
+   2026-08-16, not covered by the harness, so it does not protect against
+   regression (§Verification).
 4. **The kill switch stops this proxy only** — not the agent process, not
    already-issued credentials, not Bash.
 5. **Approvals serialize the client→server pump.** While a prompt is open, later

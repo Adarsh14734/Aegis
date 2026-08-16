@@ -115,7 +115,7 @@ Out of scope (see §7), but stated so the boundary is explicit.
 | C5a | Secret scan of tool arguments, pattern name recorded but never the value | A1, A2 | S3a | VERIFIED (harness, macOS) — S3a-REPORT.md |
 | C6 | Credential broker — secret never enters agent context (B4: broker performs the operation) | A1, T2, T3 | S4 | UNVERIFIED — not built |
 | C6a | Handle substitution after policy: model never sees the value; MCP server does | A1, T2 | S4 | VERIFIED (harness, macOS) against a **fake** keychain; OS keychain write path UNVERIFIED — S4-REPORT.md |
-| C7 | Blocking human approval, timeout-to-deny | A4, A5 | S5 | VERIFIED (harness, macOS); live-terminal path UNVERIFIED — S5-REPORT.md |
+| C7 | Blocking human approval, timeout-to-deny | A4, A5 | S5 | VERIFIED (harness, macOS); live-terminal path VERIFIED (manual, macOS) 2026-08-16 — S5-REPORT.md |
 | C8 | Bulk-operation threshold (N files → forced approval) | T1 | S5 | VERIFIED (harness, macOS) — S5-REPORT.md |
 | C9 | Soft delete to recoverable trash | T1 | S5 | VERIFIED (harness, macOS); no delete tool exists on the real FS server — S5-REPORT.md |
 | C10 | Kill switch — denies tool calls at this proxy (does NOT terminate agents or revoke grants) | all | S5 | VERIFIED (harness, macOS) — S5-REPORT.md |
