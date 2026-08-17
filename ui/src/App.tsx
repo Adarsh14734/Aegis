@@ -111,7 +111,7 @@ export default function App() {
 
         {snap && screen === "status" && <Status snap={snap} />}
         {snap && screen === "activity" && <Activity snap={snap} />}
-        {snap && screen === "approvals" && <Approvals snap={snap} onResolved={refresh} />}
+        {snap && screen === "approvals" && <Approvals snap={snap} />}
         {snap && screen === "flow" && <DataFlow snap={snap} />}
       </main>
     </div>

@@ -13,10 +13,9 @@ Visual reference: `design/Aegis.dc.html`, with tokens from `design/_ds/`.
 single-writer assumption and make a broken chain ambiguous between tampering
 and a race.
 
-The one exception is answering an approval, which does **not** write to the
-database. It hands "y" or "n" to the approval bridge, which types it on the
-proxy's terminal; `approval.py` parses it and `proxy.py` writes the resulting
-rows, exactly as if a person had answered. Same code path, same rule_ids.
+There are no exceptions: no command changes anything. **The UI cannot answer an
+approval.** It shows the request that is waiting and points at the terminal
+where it is answered — see "Approvals" below.
 
 ## Requirements
 
@@ -54,19 +53,23 @@ npm run build && npx vite preview --port 4173
 | Audit database | `~/Library/Application Support/Aegis/audit.db` | `AEGIS_AUDIT_DB` |
 | Policy | `~/Library/Application Support/Aegis/policy.json` | `AEGIS_POLICY` |
 | Chain verifier | `<repo>/aegis/verify.py` | `AEGIS_HOME` |
-| Approval bridge socket | next to the database, `approval.sock` | follows `AEGIS_AUDIT_DB` |
 
 Chain integrity is not recomputed here. The UI shells out to `aegis/verify.py`
 and reports its exit code: 0 intact, 1 broken, anything else "could not be
 checked". verify.py is the authority (S2) and already carries a deliberate
 second copy of the hash rule; a third would be a third thing to keep in step.
 
-## The approval bridge
+## Approvals
 
-`bridge/aegis-approval-bridge.py` is optional and **off unless you start it**.
-Without it the Approvals screen still shows what is waiting, but says plainly
-that this window cannot answer and that the terminal can.
+The Approvals screen is a viewer. It reads the newest `approval_prompt` row
+that has no resolving row after it, shows what is waiting, and leaves the two
+buttons visible but disabled with an explanation.
 
-It is new attack surface. Read the header comment in that file before running
-it — the short version is that anything able to write to the socket can
-approve, which on a single-user machine means any code running as you.
+There was a pty supervisor here that let the window type an answer on the
+proxy's terminal. It was removed rather than shipped unverified: it had never
+been executed, and it depended on a mechanism (`pty.fork`) that has hung in
+this environment every time it has been tried. A UI approval path stays unbuilt
+until that works and a real staleness check exists. See S6-REPORT.md.
+
+Approvals are answered where C7 puts them: at the terminal the proxy is running
+in. Nothing is lost except the buttons.

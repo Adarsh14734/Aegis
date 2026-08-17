@@ -3,9 +3,10 @@
 **Sprint:** S6
 **Date:** 2026-08-16 (revised 2026-08-17)
 **Scope:** the UI only. No new controls.
-**Status:** frontend **VERIFIED (harness, macOS)**. The Rust backend and the
-approval bridge are **UNVERIFIED — they have never been compiled or run**,
-because there is no Rust toolchain on this machine.
+**Status:** frontend **VERIFIED (harness, macOS)**. The Rust backend is
+**UNVERIFIED — it has never been compiled**, because there is no Rust toolchain
+on this machine. The approval bridge was **removed**, not shipped: see
+§Removed — the approval bridge.
 
 ---
 
@@ -23,8 +24,7 @@ because there is no Rust toolchain on this machine.
 | `ui/src-tauri/src/audit.rs` | Read-only SQLite; chain check delegated to `verify.py` |
 | `ui/src/screens/DataFlow.tsx` | States what the audit log cannot answer, rather than tabulating it |
 | `ui/src-tauri/src/policy.rs` | Read-only `policy.json` |
-| `ui/src-tauri/src/main.rs` | `snapshot()` and `resolve_approval()`, nothing else |
-| `ui/bridge/aegis-approval-bridge.py` | The pty supervisor that lets a window answer a tty prompt |
+| `ui/src-tauri/src/main.rs` | One command, `snapshot()`. Nothing that writes |
 | `ui/src/devFixture.ts` | Browser layout harness, banner-marked, unreachable from the app |
 
 No file in `aegis/` was touched — confirmed by `git status aegis/` being empty.
@@ -109,8 +109,13 @@ It now reads "Aegis keeps every entry."
 **Approvals** — a single card, never a queue, from the newest
 `approval_prompt` row with no resolving row after it. That query is exact:
 `proxy.py` writes the resolution immediately, so an unresolved prompt means a
-proxy is blocked on a human right now. Buttons name the action. When no bridge
-is running they are disabled with an explanation rather than silently inert.
+proxy is blocked on a human right now.
+
+**The buttons are permanently disabled and say why.** This window cannot answer
+an approval; the request is answered at the terminal the proxy runs in. They
+are kept visible rather than hidden because the labels are what tell you what
+the answer would do — a disabled control that explains itself is honest, an
+enabled one that silently does nothing is not.
 
 **Data flow** — a statement, not a table. The audit log cannot say where an
 allowed request went or how big it was, so the screen says that in one sentence
@@ -154,35 +159,83 @@ The design's Status table lists "Claude, Cursor". Nothing in `policy.json` or
 `audit.db` records which agent is connected. The row shows a tool count
 instead. Same root cause as finding 1: identity is not captured anywhere.
 
-## Finding 3 — the approval bridge is real new attack surface
+## Finding 3 — the approval bridge was removed
 
-Answering a `/dev/tty` prompt from a window requires something to type on that
-terminal. `bridge/aegis-approval-bridge.py` allocates a pty, starts the proxy
-inside it with the real JSON-RPC pipes still on stdin/stdout, and exposes a
-0600 unix socket that accepts exactly two answers.
+It is described in §Removed — the approval bridge. In short: it was never once
+executed, it rested on a mechanism that has never worked in this environment,
+and its own header claimed a safety check the code did not contain. Deleting it
+was cheaper than any of the alternatives.
 
-`approval.py`, `proxy.py` and `audit.py` are unmodified and unaware. The
-decision, the timeout, the audit rows and the fail-closed behaviour are all
-still theirs.
+## Removed — the approval bridge
 
-What it costs, stated plainly:
+`ui/bridge/aegis-approval-bridge.py` and the Tauri `resolve_approval` command
+that called it are **deleted**. They are not disabled, not feature-flagged,
+not left dormant. Three reasons, and any one of them would have been enough.
 
-1. **Anything that can write to the socket can approve.** The socket is 0600
-   and owned by the user — the same boundary the agent runs inside. An agent
-   that can run local commands as you can approve its own request.
-   THREAT-MODEL.md §7.1 already concedes malware on the host; this lowers the
-   bar from "malware" to "any code running as you".
-2. **It weakens the tty guarantee.** Part of C7's value was that the answer
-   arrived on a channel the agent does not control. With the bridge running
-   that is no longer strictly true.
-3. **It cannot authenticate the asker.** It checks that a prompt is actually
-   waiting, so a stale click cannot answer a later request, but it cannot tell
-   the Aegis window from anything else on the machine.
+**1. It had never been executed. Not once.** Asked directly whether it was
+verified, the answer was that until that moment it had never even been parsed —
+`python3 -m py_compile` was run on it for the first time while answering the
+question. No test in the repo referenced it. Nothing had ever allocated its
+pty, opened its socket, or typed a byte on a terminal through it. The full path
+— button → `resolve_approval` → unix socket → bridge → pty → `approval.py` →
+audit rows — had never carried a single byte, and the Rust half could not even
+be compiled here to try.
 
-Mitigations: socket 0600 in the data directory; only the bytes `y` and `n` can
-ever reach the terminal, and nothing from the request is echoed there; it
-refuses when no prompt is waiting; it exits with the proxy. It is **off unless
-started**, and without it the Approvals screen degrades honestly.
+**2. It rested on a mechanism that has failed in this environment every time.**
+Giving a child process a controlling pty while its stdin and stdout stay on
+pipes has now hung, with no output at all, three times:
+
+| Attempt | Sprint | Result |
+|---|---|---|
+| `os.setsid()` + `TIOCSCTTY` in `preexec_fn` | S5 | hung, no output |
+| `pty.fork()` probe | S6, before writing the bridge | hung, no output |
+| the bridge itself | S6 | never run, and built on `pty.fork` |
+
+The third line is the honest one: it was written to a design that should work,
+against a primitive that has not worked here yet. That is the same shape as
+S5's first controlling-terminal attempt, which was also written before it was
+tried — except S5 caught it with a test and this had no test to catch it.
+
+**3. Its header claimed a safety check the code did not implement.** The file
+said *"The prompt_id is checked against the pending prompt so a stale click
+cannot answer a later request."* The Rust sent a `prompt_id`; the bridge's
+`handle()` never read it. `grep prompt_id` over the bridge matched only that
+sentence. The single guard was "some prompt is waiting", so a click could have
+answered a *different* request than the one on screen — approving something the
+operator never saw. That claim had also been copied into this report.
+
+A security component that has never run, cannot be run here, and whose
+documentation overstated its own protections is not something to ship behind a
+flag. It was cheaper to delete it than to leave it for someone to find and
+trust.
+
+### What this costs
+
+Nothing that existed before S6. C7 still works exactly as S5 verified it: the
+prompt appears on the proxy's controlling terminal, a human answers there, and
+`approval.py` records who resolved it. The Approvals screen shows the waiting
+request and points at that terminal.
+
+### What it would take to build it properly
+
+A UI approval path stays **unbuilt**. Two things are needed before one ships:
+
+1. **A pty mechanism that actually works** — demonstrated on the target
+   machine, with a test that fails if it regresses. Not written and assumed.
+   Everything else depends on this and it has never once succeeded here.
+2. **A real `prompt_id` check.** The bridge must confirm the answer it is
+   about to type belongs to the prompt the window displayed. That means the
+   bridge reading the audit database to learn which prompt is live, which turns
+   it from "writes two bytes to a terminal" into "reads the audit log as well"
+   — a wider component than the one that was deleted, and a design decision
+   rather than a patch.
+
+The attack surface analysis that was here still applies to anything built to
+this shape, and should be re-read first: any process able to write the socket
+can approve, which on a single-user machine means any code running as you —
+lowering THREAT-MODEL.md §7.1's bar from "malware on the host" to "any code
+running as you". C7's value came partly from the answer arriving on a channel
+the agent does not control, and a socket gives that channel away.
 
 ---
 
@@ -200,7 +253,7 @@ started**, and without it the Approvals screen degrades honestly.
 | Write path to `audit.db` | none; read-only flag only |
 | `git status aegis/` | empty |
 | **Rust backend compiled** | **NEVER — no toolchain** |
-| **Approval bridge executed** | **NEVER — see below** |
+| Approval bridge | **deleted**, never having been executed |
 
 **Tier: VERIFIED (harness, macOS)** for the frontend only, per S1's definition:
 real hardware, real build, real rendering, decisions driven by `tests/` rather
@@ -224,18 +277,11 @@ To close it: install Rust, then `npm run tauri dev`. Expect to fix compile
 errors — treat the first successful launch as the real verification, not this
 report.
 
-### The approval bridge is unverified for a specific reason
+### The approval bridge is gone
 
-The bridge needs a child process with a controlling pty while its stdin and
-stdout stay on pipes. **Two independent attempts at that mechanism hung with no
-output in this environment** — `setsid` + `TIOCSCTTY` in `preexec_fn` during
-S5, and `pty.fork()` again here. The same limitation is why S5's C7 end-to-end
-check is a manual procedure.
-
-The bridge is therefore written to the design that should work and has **not
-been run once**. It is the least trustworthy file in this sprint. Do not enable
-it without testing it, and do not assume the buttons work until you have seen
-them work.
+See §Removed — the approval bridge. It was never run, and it is no longer in
+the tree to be run. The same pty limitation is why S5's C7 end-to-end check is
+still a manual procedure.
 
 ---
 
@@ -280,7 +326,9 @@ replaced by a single honest statement.
 ## Known gaps
 
 1. **The Rust half has never been compiled or run** (§Verification).
-2. **The bridge has never been executed** and may not work at all.
+2. **There is no UI approval path.** The bridge was removed; approvals are
+   answered at the proxy's terminal. Rebuilding it needs a working pty
+   mechanism and a real prompt_id check (§Removed).
 3. **Data flow cannot say where anything went** (finding 1). The screen now
    says so plainly instead of tabulating nothing, but the capability is still
    missing and the design still implies knowledge Aegis does not have.

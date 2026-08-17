@@ -1,12 +1,11 @@
 /** The only place the UI talks to anything outside itself.
  *
- *  Every call below is a read, with one exception: resolveApproval(), which
- *  hands an answer to the running proxy through the approval bridge. The UI
- *  has no database handle, no write path, and no way to reach audit.db —
- *  the Rust side opens it read-only and returns plain values.
+ *  Every call below is a read. The UI has no database handle, no write path,
+ *  and no way to reach audit.db — the Rust side opens it read-only and
+ *  returns plain values. There is no command that changes anything.
  */
 
-import type { PendingApproval, Snapshot } from "./types";
+import type { Snapshot } from "./types";
 
 /** Tauri v2 injects this before any app code runs. */
 export const isTauri = (): boolean =>
@@ -28,14 +27,6 @@ export async function loadSnapshot(): Promise<Snapshot> {
   return call<Snapshot>("snapshot");
 }
 
-/** Send the human's answer to the waiting proxy.
- *
- *  This does NOT resolve the approval itself and does not touch audit.db. It
- *  writes one byte-string to the approval bridge, which types it on the
- *  proxy's terminal. approval.py parses it, proxy.py records it, exactly as if
- *  a person had answered — same code path, same audit rows, same rule_ids.
- */
-export async function resolveApproval(p: PendingApproval, approve: boolean): Promise<string> {
-  if (!isTauri()) return "The browser harness cannot answer a real approval.";
-  return call<string>("resolve_approval", { promptId: p.prompt_id, approve });
-}
+/* resolveApproval() was removed with the approval bridge (S6, 2026-08-17).
+   The UI has no way to answer a prompt and does not pretend to: Approvals
+   shows what is waiting and says where to answer it. See S6-REPORT.md. */

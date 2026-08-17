@@ -36,7 +36,6 @@ export function sampleSnapshot(): Snapshot {
       error: null,
     },
     running_since: at(8, 2),
-    bridge: { available: true, detail: "" },
     pending: {
       prompt_id: 41,
       ts: at(15, 54),

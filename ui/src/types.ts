@@ -51,20 +51,12 @@ export interface PendingApproval {
   paths: string[];
 }
 
-export interface BridgeStatus {
-  /** Whether an approval bridge socket is present and answering. When false
-   *  the Approvals screen shows the request but cannot resolve it, and says so. */
-  available: boolean;
-  detail: string;
-}
-
 export interface Snapshot {
   chain: ChainStatus;
   counters: Counters;
   policy: PolicyView;
   recent: AuditRow[];
   pending: PendingApproval | null;
-  bridge: BridgeStatus;
   running_since: number | null;
   /** True only in the browser dev harness. The UI paints a loud banner when
    *  set, so sample pixels can never be mistaken for a real audit log. */
