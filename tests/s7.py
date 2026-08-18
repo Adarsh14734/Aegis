@@ -585,6 +585,77 @@ config_path.write_text(wired_text)
 
 
 # ---------------------------------------------------------------------------
+section("7b. a client still running the old wiring (S7 gap 9)")
+# ---------------------------------------------------------------------------
+
+# The config is correct and every file-reading check passes. What is wrong is
+# not on disk: a client launched its server before `aegis init` ran and is still
+# talking to it directly. This is the state doctor used to report as green.
+
+restart_line = "RESTART YOUR MCP CLIENT AFTER"
+done = run_cli(["doctor", "--no-probe"], project, timeout=300)
+check("doctor prints the restart instruction even when nothing is detected",
+      restart_line in done.stdout, done.stdout[-1500:])
+check("...and passes the stale-client check when no server is loose",
+      "[  ok  ] No client is still running the old wiring" in done.stdout,
+      done.stdout[-1500:])
+check("...and says the check is a heuristic, not a guarantee",
+      "heuristic" in done.stdout)
+
+# Now be that stale client: launch the *unwrapped* server, exactly as a client
+# started before init would still be running it, and hold it open on a pipe.
+stale = subprocess.Popen(
+    [sys.executable, str(MOCK_SERVER), str(project / "workspace")],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    env=lab_env(),
+)
+time.sleep(1.0)
+try:
+    done = run_cli(["doctor", "--no-probe"], project, timeout=300)
+    out = done.stdout
+    check("doctor exits non-zero when a client is still running the old wiring",
+          done.returncode != 0, f"exit {done.returncode}\n" + out[-2500:])
+    check("doctor fails the stale-client check",
+          "[ FAIL ] No client is still running the old wiring" in out, out[-2500:])
+    check("...and names the process it found", f"pid {stale.pid}" in out, out[-2500:])
+    check("...and names the configured server it matches", "'mockfs'" in out)
+    check("...and tells the user in plain English to quit and reopen the app",
+          "QUIT AND REOPEN THAT APPLICATION" in out)
+    check("...and says the tool calls are not checked or recorded",
+          "none of its tool calls are checked or recorded" in out)
+    check("...and the banner switches to RESTART REQUIRED",
+          "RESTART REQUIRED" in out and restart_line not in out, out[-1200:])
+    check("the config on disk is still correct, which is the point",
+          "[  ok  ] MCP configuration points at the proxy" in out)
+finally:
+    stale.kill()
+    stale.wait(timeout=10)
+
+time.sleep(1.0)
+done = run_cli(["doctor", "--no-probe"], project, timeout=300)
+check("doctor passes again once the stale client is gone",
+      "[  ok  ] No client is still running the old wiring" in done.stdout,
+      done.stdout[-1500:])
+
+# A server that IS behind a proxy must not be mistaken for a stale one.
+mediated = subprocess.Popen(
+    [sys.executable, str(ROOT / "aegis" / "proxy.py"), "--",
+     sys.executable, str(MOCK_SERVER), str(project / "workspace")],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    env=lab_env(),
+)
+time.sleep(1.5)
+try:
+    done = run_cli(["doctor", "--no-probe"], project, timeout=300)
+    check("a server running behind a proxy is not reported as stale",
+          "[  ok  ] No client is still running the old wiring" in done.stdout,
+          done.stdout[-2000:])
+finally:
+    mediated.kill()
+    mediated.wait(timeout=10)
+
+
+# ---------------------------------------------------------------------------
 section("8. aegis doctor with a tampered chain")
 # ---------------------------------------------------------------------------
 

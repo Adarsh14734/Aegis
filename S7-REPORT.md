@@ -9,7 +9,7 @@ by hand.
 **Status:** `aegis init` / `doctor` / `uninstall` **VERIFIED (harness, macOS)**;
 `aegis doctor` additionally **VERIFIED (live, macOS)** against the real
 installation and the real `@modelcontextprotocol/server-filesystem`, 2026-08-17.
-Suite: **125 passed, 0 failed**, exit 0. Every prior suite unchanged.
+Suite: **138 passed, 0 failed**, exit 0. Every prior suite unchanged.
 
 ---
 
@@ -25,11 +25,12 @@ Suite: **125 passed, 0 failed**, exit 0. Every prior suite unchanged.
 | `aegis/doctor.py` | `aegis doctor` — the command that proves rather than asserts |
 | `aegis/policy.template.json` | Shipped defaults. Kept in agreement with `policy.example.json` by a test |
 | `README.md` | Install → init → doctor, and §7 in short form |
-| `tests/s7.py` | 125 checks against a fake `HOME` in a temp lab |
+| `tests/s7.py` | 138 checks against a fake `HOME` in a temp lab |
 | `evidence/S7-suite.txt` | Suite output plus a regression run of every prior suite |
 | `evidence/S7-cleanroom-install.txt` | Wheel built and installed into a fresh venv, on a machine with no Aegis state |
 | `evidence/S7-doctor-unwired.txt` | The same install with the proxy removed from the pipe — doctor exits 1 |
 | `evidence/S7-live-doctor.txt` | doctor on the real installation, real npx server, real audit chain |
+| `evidence/S7-doctor-stale-client.txt` | correct config, real unwrapped server still running — doctor exits 1 |
 
 Four existing files were touched. Three of them for import plumbing only, and
 one message change:
@@ -214,6 +215,67 @@ nothing is wired, the proof fails as "not attempted" and says why.
 **4. It re-verifies the chain with the new row in it**, using `verify.py` as a
 subprocess — the independent verifier from S2, not a third copy of the hash rule.
 
+### A correct config is not a running proxy
+
+An MCP client starts its servers **once, when it launches**. `aegis init` edits
+the file those servers were launched from; it cannot reach into a process that
+has already started. So a client left running across setup keeps talking to an
+unwrapped server, and every check above — all of which read files — reports
+green while nothing is mediated. That was gap 9 in the first draft of this
+report, and it is now a check.
+
+Doctor reads the process table and, for each configured server, looks for a
+process matching its downstream command with **no Aegis proxy anywhere in its
+ancestry**. Against the real installation, with the correct config untouched and
+an unwrapped copy of the real filesystem server running
+(`evidence/S7-doctor-stale-client.txt`):
+
+```
+[  ok  ] MCP configuration points at the proxy
+           filesystem -> Aegis proxy   (/Users/adarsh/code/aegis-testlab/.mcp.json)
+[ FAIL ] No client is still running the old wiring
+           pid 3310 looks like the 'filesystem' server from …/.mcp.json,
+             running with no Aegis proxy above it (launched by claude)
+               npm exec @modelcontextprotocol/server-filesystem …/workspace
+           pid 3330 …
+               node …/node_modules/.bin/mcp-server-filesystem …/workspace
+           QUIT AND REOPEN THAT APPLICATION. An MCP client starts its servers
+           once, when it launches. … none of its tool calls are checked or
+           recorded — however green everything above looks.
+```
+
+Every other check on that run is `ok`, including the wiring check, and doctor
+exits 1.
+
+Matching survives `npx` rewriting its own argv: the config says
+`npx -y @modelcontextprotocol/server-filesystem <dir>` and the process that
+actually runs is `node …/mcp-server-filesystem <dir>`. Fingerprinting drops
+launchers (`npx`, `node`, `python3`, `sh`, `docker`, …) and reduces the rest to
+last path segments, then requires two tokens to match where two exist — one
+token alone matches the editor that has the folder open.
+
+**It is a heuristic and says so.** `ps` can be restricted, a client can hold a
+server whose command line resembles nothing in the config, and a server launched
+in an unforeseen way will be missed. So a clean result is never reported as
+proof, and **the restart instruction is printed on every run whatever the scan
+found**:
+
+```
++----------------------------------------------------------------------+
+|  RESTART YOUR MCP CLIENT AFTER `aegis init`                           |
++----------------------------------------------------------------------+
+A client starts its MCP servers once, when it launches. Changing the
+configuration afterwards does not move a server that is already running.
+Doctor checked the process table and saw nothing running outside a proxy,
+but it cannot see inside an already-running client, and this check is a
+heuristic. If you have not restarted the client since setup, do it now —
+a green report and an unmediated agent look identical from here.
+```
+
+The banner switches to **RESTART REQUIRED** when something was detected. Both
+forms are tested. False positives were checked against 566 real processes on
+this machine: none, and doctor's own probe children are excluded by pid.
+
 ### Everything it checks
 
 | Check | Fails when |
@@ -225,6 +287,7 @@ subprocess — the independent verifier from S2, not a third copy of the hash ru
 | Head anchor matches | anchor present and the chain fails; **warns** when absent |
 | Credential storage (keyring) | policy grants handles and keyring is missing; **warns** otherwise |
 | MCP configuration points at the proxy | no configured server is wrapped |
+| **No client is still running the old wiring** | a process matching a configured server runs with no proxy above it; **warns** if `ps` cannot be read |
 | **PROOF: a real tool call is denied and recorded** | no denial, no row, wrong row, or the chain breaks |
 
 Exit is non-zero if any check FAILs. An empty audit log passes with a sentence
@@ -277,7 +340,7 @@ captured — doctor drives the chain itself rather than a model driving it.
 
 | Suite | Result | Exit |
 |---|---|---|
-| `tests/s7.py` | **125 passed, 0 failed** | 0 |
+| `tests/s7.py` | **138 passed, 0 failed** | 0 |
 | `tests/s5.py` | 80 passed, 0 failed, 1 NOT RUN | 1 |
 | `tests/s4.py` | 65 passed, 0 failed, 2 NOT RUN | 1 |
 | `tests/s3b.py` | 60/60 | 0 |
@@ -296,6 +359,7 @@ import change altered nothing.
 | doctor on a correct setup | exit 0, `AEGIS DENIED` returned, audit log grew by exactly one row, chain re-verified |
 | **doctor with the proxy NOT wired in** | **exit 1.** Wiring check FAIL, proof FAIL "not attempted", **no audit row written**, and every file-reading check still PASSes — which is the point |
 | doctor with a tampered chain | exit 1, "The record of what happened has been altered" |
+| doctor with a correct config but a stale client | **exit 1**, names both matching pids and the app to restart, while every file check stays green |
 | uninstall | config restored **byte for byte** (SHA-256 equality), audit db and policy still present with every row |
 
 The unwired case is worth reading in `evidence/S7-doctor-unwired.txt`. Same
@@ -369,7 +433,7 @@ appeared in `tests/s7.py` between two of my runs. It is not my work and I have
 not claimed it. It passes, it is sandboxed the same way as the rest, and it
 closes a real gap: every section I wrote uses `--yes`, which skips every
 `input()` call in `onboard.py`, so the prompt code would have shipped never
-having been typed at. Twelve of the 125 checks are that section.
+having been typed at. Twelve of the 138 checks are that section.
 
 ---
 
@@ -400,10 +464,17 @@ having been typed at. Twelve of the 125 checks are that section.
 8. **No `aegis upgrade`.** A `.mcp.json` written by an older Aegis keeps working
    (that is what the flat-import fallback is for), but nothing migrates it to the
    installed-package form.
-9. **The client must be restarted after `init`.** README says so; nothing
-   enforces or detects it, and a stale client keeps running the unwrapped server
-   it launched earlier. **doctor cannot see this** — it launches its own copy of
-   the configured command, so it reports the config, not the running process.
+9. **Stale-client detection is a process-table heuristic, not a guarantee.**
+   Gap 9 in the first draft of this report — doctor reporting green while a
+   client still ran the old wiring — is now a failing check with a live true
+   positive behind it. What remains: `ps` may be restricted (reported as a
+   warning, not a pass); a server launched in a way its configuration does not
+   predict will be missed; a client that keeps an MCP server as an in-process
+   thread rather than a child process is invisible to any process scan. The
+   restart instruction is therefore printed on every run rather than only when
+   something is found. Detection can also fire on a server a user is running by
+   hand for their own reasons — a false alarm that costs a restart, chosen over
+   a silence that costs the control.
 10. **Still reviewed by nobody but its author.** THREAT-MODEL.md §10 is empty
     after eight sprints.
 

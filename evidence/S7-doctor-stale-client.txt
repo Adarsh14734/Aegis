@@ -1,0 +1,97 @@
+Aegis S7 gap 9 — a client still running the old wiring, 2026-08-18 11:04:33 IST
+macOS 26.5.1 / Python 3.14.3
+
+The real aegis-testlab config is CORRECT and unchanged — it routes through
+the proxy. What is wrong is not on disk: an unwrapped copy of the real
+@modelcontextprotocol/server-filesystem is running, exactly as a client that
+launched before 'aegis init' would still be holding one.
+
+$ ps -ww -eo pid=,ppid=,command= | grep server-filesystem
+ 3310  3305 npm exec @modelcontextprotocol/server-filesystem /Users/adarsh/code/aegis-testlab/workspace    
+ 3330  3310 node /Users/adarsh/.npm/_npx/a3241bba59c344f5/node_modules/.bin/mcp-server-filesystem /Users/adarsh/code/aegis-testlab/workspace
+
+$ cat .mcp.json   # still correct
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "python3",
+      "args": ["/Users/adarsh/code/aegis/aegis/proxy.py", "--",
+               "npx", "-y", "@modelcontextprotocol/server-filesystem",
+               "/Users/adarsh/code/aegis-testlab/workspace"]
+    }
+  }
+}
+
+$ aegis doctor --no-probe
+Aegis doctor
+========================================================================
+project: /Users/adarsh/code/aegis-testlab
+
+[  ok  ] Policy file exists and parses
+           /Users/adarsh/Library/Application Support/Aegis/policy.json (mode 0o600)
+           16 tool rules, default effect 'deny', 5 deny patterns
+[  ok  ] Policy file is outside every workspace root
+           policy: /Users/adarsh/Library/Application Support/Aegis/policy.json
+           workspace roots: /Users/adarsh/code/aegis-testlab/workspace
+           The agent can write anywhere inside a workspace root, so a policy inside one would be a policy the agent can rewrite.
+[  ok  ] Audit database is writable
+           /Users/adarsh/Library/Application Support/Aegis/audit.db (mode 0o600)
+[  ok  ] Audit chain verifies
+           OK: 85 row(s) verified, chain intact
+[  ok  ] Head anchor matches
+           /Users/adarsh/Library/Application Support/Aegis/aegis-head.txt
+           Local and unsigned: anyone who can rewrite the database can rewrite this too. Keep a copy of the head hash off this machine.
+[  ok  ] Credential storage (keyring)
+           backend: Keyring
+           handles granted in policy: none
+[  ok  ] MCP configuration points at the proxy
+           filesystem -> Aegis proxy   (/Users/adarsh/code/aegis-testlab/.mcp.json)
+[ FAIL ] No client is still running the old wiring
+           pid 3310 looks like the 'filesystem' server from /Users/adarsh/code/aegis-testlab/.mcp.json, running with no Aegis proxy above it (launched by claude)
+               npm exec @modelcontextprotocol/server-filesystem /Users/adarsh/code/aegis-testlab/workspace
+           pid 3330 looks like the 'filesystem' server from /Users/adarsh/code/aegis-testlab/.mcp.json, running with no Aegis proxy above it (launched by claude)
+               node /Users/adarsh/.npm/_npx/a3241bba59c344f5/node_modules/.bin/mcp-server-filesystem /Users/adarsh/code/aegis-testlab/workspace
+           QUIT AND REOPEN THAT APPLICATION. An MCP client starts its servers once, when it launches. Editing the configuration afterwards does not move a server that is already running, so this one is still being talked to directly and none of its tool calls are checked or recorded — however green everything above looks.
+[ skip ] PROOF: a real tool call is denied and recorded
+           --no-probe was passed. Every remaining check reads a file; none of them shows that a tool call reaches the policy engine.
+
+========================================================================
+1 check(s) FAILED:
+  - No client is still running the old wiring
+
++----------------------------------------------------------------------+
+|  RESTART REQUIRED — a client is still running the old wiring          |
++----------------------------------------------------------------------+
+Quit and reopen the application named above. Until you do, its tool calls
+are going straight to the server, unchecked and unrecorded, no matter what
+the configuration on disk now says.
+
+
+WHAT THIS DOES NOT COVER
+========================
+Everything above concerns tool calls that cross an MCP stdio pipe Aegis was put
+in front of. That is a narrow boundary, and these are outside it:
+
+  Bash, and every shell command.  An agent that runs `cat ~/.ssh/id_rsa` never
+  touches this proxy. In the S1 live test three of the model's four attempts on
+  a secret went through Bash; Aegis blocked none of them — the client's own
+  permission rules did. Those rules are your agent's configuration, not an
+  Aegis control, and a different client may not have them.
+
+  Native file tools built into the agent (Read, Write, Edit in Claude Code).
+  Same pipe, same absence: they are not MCP calls.
+
+  MCP servers not routed through the proxy.  Listed above if any were found.
+
+  Anything the downstream server does on its own — the requests it makes, the
+  files it touches that were not named in the call's arguments.
+
+  Malware already on this machine, and anyone with root.  Both can edit the
+  policy, the audit database, and the head anchor.
+
+  Deleting the whole audit database.  An empty chain is a valid chain.
+
+THREAT-MODEL.md §7 is the full list and it is longer than this. Read it before
+describing Aegis to anyone else.
+
+EXIT 1

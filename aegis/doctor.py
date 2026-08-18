@@ -333,7 +333,9 @@ def _check_keyring(report: Report, policy: Policy | None) -> None:
         )
 
 
-def _check_wiring(report: Report, project: Path) -> list[tuple[clients.Detected, str]]:
+def _check_wiring(
+    report: Report, project: Path
+) -> tuple[list[tuple[clients.Detected, str]], list[clients.Detected]]:
     found = clients.detect(project)
     wired: list[tuple[clients.Detected, str]] = []
     loose: list[str] = []
@@ -354,7 +356,7 @@ def _check_wiring(report: Report, project: Path) -> list[tuple[clients.Detected,
             + ", ".join(str(p) for _, p, _ in clients.candidate_locations(project)),
             "Run `aegis init` in the project directory.",
         )
-        return wired
+        return wired, found
 
     if not wired:
         report.add(
@@ -364,7 +366,7 @@ def _check_wiring(report: Report, project: Path) -> list[tuple[clients.Detected,
             "Every tool call these servers receive is unmediated and unrecorded.",
             "Run `aegis init` to route them through the proxy.",
         )
-        return wired
+        return wired, found
 
     check = report.add("MCP configuration points at the proxy", PASS, *lines)
     if loose:
@@ -374,7 +376,209 @@ def _check_wiring(report: Report, project: Path) -> list[tuple[clients.Detected,
             "These are outside the boundary entirely. Their tool calls are not "
             "checked and not recorded.",
         )
-    return wired
+    return wired, found
+
+
+# ---------------------------------------------------------------------------
+# is a client still running the old wiring?
+# ---------------------------------------------------------------------------
+
+# Interpreters and launchers say nothing about *which* server a process is, so
+# they are dropped when fingerprinting a configured command. What is left — a
+# script path, a package name, a workspace directory — is what a running
+# process can be recognised by.
+LAUNCHERS = {
+    "npx", "npm", "node", "nodejs", "bun", "deno", "uvx", "uv", "pipx",
+    "python", "python3", "python3.10", "python3.11", "python3.12", "python3.13",
+    "python3.14", "sh", "bash", "zsh", "env", "docker", "podman", "exec",
+}
+
+# Ancestor names worth reporting back as "restart this". Matched on the process
+# basename, case-insensitively, as a substring.
+CLIENT_HINTS = (
+    "claude", "cursor", "windsurf", "code helper", "electron", "vscode", "zed",
+)
+
+
+def _process_table() -> list[tuple[int, int, str]] | None:
+    """(pid, ppid, command line) for every visible process, or None.
+
+    None means "could not look", which is reported differently from "looked and
+    found nothing". `-ww` because the default width truncates a command line,
+    and a truncated command line is one that quietly stops matching.
+    """
+    try:
+        done = subprocess.run(
+            ["ps", "-ww", "-eo", "pid=,ppid=,command="],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+
+    rows: list[tuple[int, int, str]] = []
+    for line in done.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+        except ValueError:
+            continue
+    return rows or None
+
+
+def _is_proxy_cmdline(cmd: str) -> bool:
+    return "aegis.proxy" in cmd or "aegis/proxy.py" in cmd
+
+
+def _fingerprint(argv: list[str]) -> list[str]:
+    """Tokens that identify a server process, from its configured command.
+
+    Absolute paths are kept whole; everything else is reduced to its last path
+    segment, so `@modelcontextprotocol/server-filesystem` in the config still
+    matches the `.../server-filesystem/dist/index.js` that npx actually execs.
+    """
+    tokens: list[str] = []
+    for raw in argv:
+        if raw.startswith("-"):
+            continue
+        base = raw.rsplit("/", 1)[-1]
+        if not base or base.lower() in LAUNCHERS:
+            continue
+        tokens.append(raw if raw.startswith("/") else base)
+    return tokens
+
+
+def _matches(cmd: str, tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    hits = sum(1 for t in tokens if t in cmd)
+    # Two tokens where two exist. One token is too loose — a workspace path on
+    # its own matches the editor that has the folder open.
+    return hits >= min(2, len(tokens))
+
+
+def _ancestry(pid: int, parent: dict[int, int], cmd: dict[int, str]) -> list[int]:
+    chain: list[int] = []
+    seen = {pid}
+    cur = parent.get(pid, 0)
+    while cur and cur > 1 and cur not in seen:
+        seen.add(cur)
+        chain.append(cur)
+        cur = parent.get(cur, 0)
+    return chain
+
+
+def _client_hint(chain: list[int], cmd: dict[int, str]) -> str:
+    """A name for the application to restart, or "".
+
+    Deliberately weak, and the caller words it as a guess. A shell basename is
+    replaced by the hint that matched it: a server launched from a terminal
+    inside an editor has a shell in its ancestry whose command line mentions
+    that editor, and reporting "zsh" there would send the user to restart the
+    wrong thing.
+    """
+    shells = {"sh", "bash", "zsh", "fish", "dash", "csh", "tcsh", "login", "-zsh", "-bash"}
+    for pid in chain:
+        line = cmd.get(pid, "")
+        head = line.split(None, 1)[0].rsplit("/", 1)[-1] if line else ""
+        for hint in CLIENT_HINTS:
+            if hint in line.lower():
+                return hint if head.lower() in shells or not head else head
+    return ""
+
+
+def _check_stale_clients(report: Report, found: list[clients.Detected]) -> None:
+    """Gap 9 from S7: a correct config proves nothing about a running client.
+
+    An MCP client launches its servers once, at startup. `aegis init` edits the
+    file it launched them from; it cannot reach into a process that has already
+    started. So a client still running from before the edit keeps talking to an
+    unwrapped server, and every other check here — which reads files — reports
+    green while nothing is mediated.
+
+    This looks for the actual processes: for each configured server, does a
+    process matching its downstream command exist with no Aegis proxy anywhere
+    in its ancestry? A match is a FAIL naming the client to restart.
+
+    It is a heuristic and is described as one. `ps` may be restricted, a server
+    may be launched in a way its configuration does not predict, and a client
+    may hold a server whose command line resembles nothing in the config. So a
+    clean result is never reported as proof, and the restart instruction is
+    printed whatever this finds.
+    """
+    servers: list[tuple[str, Path, list[str]]] = []
+    for det in found:
+        for name, entry in det.servers.items():
+            downstream = clients.unwrap_entry(entry) if clients.is_wrapped(entry) else entry
+            if not isinstance(downstream, dict) or not downstream.get("command"):
+                continue
+            tokens = _fingerprint(_entry_argv(downstream))
+            if tokens:
+                servers.append((name, det.path, tokens))
+
+    if not servers:
+        report.add(
+            "No client is still running the old wiring", SKIP,
+            "no configured server command to look for in the process table.",
+        )
+        return
+
+    table = _process_table()
+    if table is None:
+        report.add(
+            "No client is still running the old wiring", WARN,
+            "could not read the process table, so this was not checked.",
+            "RESTART YOUR MCP CLIENT after running `aegis init`. A client that "
+            "was already running kept the server it launched before the change.",
+        )
+        return
+
+    parent = {pid: ppid for pid, ppid, _ in table}
+    cmdline = {pid: cmd for pid, _, cmd in table}
+    mine = {os.getpid(), *_ancestry(os.getpid(), parent, cmdline)}
+
+    stale: list[str] = []
+    for pid, _, cmd in table:
+        if pid in mine or _is_proxy_cmdline(cmd):
+            continue
+        chain = _ancestry(pid, parent, cmdline)
+        if any(_is_proxy_cmdline(cmdline.get(a, "")) for a in chain):
+            continue  # this one is behind a proxy: mediated, fine
+        for name, path, tokens in servers:
+            if _matches(cmd, tokens):
+                client = _client_hint(chain, cmdline)
+                stale.append(
+                    f"pid {pid} looks like the '{name}' server from {path}, "
+                    f"running with no Aegis proxy above it"
+                    + (f" (launched by {client})" if client else "")
+                )
+                stale.append(f"    {cmd[:160]}")
+                break
+
+    if stale:
+        report.add(
+            "No client is still running the old wiring", FAIL,
+            *stale,
+            "",
+            "QUIT AND REOPEN THAT APPLICATION. An MCP client starts its servers "
+            "once, when it launches. Editing the configuration afterwards does "
+            "not move a server that is already running, so this one is still "
+            "being talked to directly and none of its tool calls are checked or "
+            "recorded — however green everything above looks.",
+        )
+        return
+
+    report.add(
+        "No client is still running the old wiring", PASS,
+        f"looked at {len(table)} processes for the {len(servers)} configured "
+        f"server command(s); none is running outside an Aegis proxy.",
+        "This is a heuristic, not a guarantee: a client can hold a server whose "
+        "command line resembles nothing in the configuration. If you have not "
+        "restarted your MCP client since running `aegis init`, do that now.",
+    )
 
 
 def _pick_probe(policy: Policy, cwd: Path) -> tuple[str, str, str, str] | None:
@@ -570,6 +774,41 @@ describing Aegis to anyone else.
 """
 
 
+def _restart_notice(report: Report) -> str:
+    """Printed on every run, pass or fail.
+
+    Everything doctor checks about wiring is a fact about files. A running MCP
+    client is not a file: it launched its servers once and is still talking to
+    them. The process scan above catches the common case and cannot promise to
+    catch every one, so the instruction is given unconditionally rather than
+    only when something was detected.
+    """
+    detected = any(
+        c.name.startswith("No client is still running") and c.status == FAIL
+        for c in report.checks
+    )
+    if detected:
+        return """
++----------------------------------------------------------------------+
+|  RESTART REQUIRED — a client is still running the old wiring          |
++----------------------------------------------------------------------+
+Quit and reopen the application named above. Until you do, its tool calls
+are going straight to the server, unchecked and unrecorded, no matter what
+the configuration on disk now says.
+"""
+    return """
++----------------------------------------------------------------------+
+|  RESTART YOUR MCP CLIENT AFTER `aegis init`                           |
++----------------------------------------------------------------------+
+A client starts its MCP servers once, when it launches. Changing the
+configuration afterwards does not move a server that is already running.
+Doctor checked the process table and saw nothing running outside a proxy,
+but it cannot see inside an already-running client, and this check is a
+heuristic. If you have not restarted the client since setup, do it now —
+a green report and an unmediated agent look identical from here.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="aegis doctor",
@@ -595,7 +834,12 @@ def main(argv: list[str] | None = None) -> int:
     policy = _check_policy(report)
     db = _check_audit(report)
     _check_keyring(report, policy)
-    wired = _check_wiring(report, project)
+    wired, found = _check_wiring(report, project)
+
+    # Before the probe, not after: the probe launches its own copy of the
+    # configured command, and a check that scans the process table has no
+    # business running while doctor's own children are in it.
+    _check_stale_clients(report, found)
 
     if args.no_probe:
         report.add(
@@ -621,5 +865,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {check.name}")
     else:
         print("All checks passed.")
+
+    print(_restart_notice(report))
     print(NOT_COVERED)
     return 1 if failures else 0

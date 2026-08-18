@@ -60,8 +60,12 @@ speaks real MCP to it, asks it to open a file your policy forbids, and then
 reopens the audit database to confirm a row appeared and the chain still
 verifies. If the proxy is not in the pipe, `doctor` exits non-zero and says so.
 
-Restart your MCP client after `aegis init`, or it will keep running the server
-it launched before the config changed.
+**Restart your MCP client after `aegis init`.** A client starts its MCP servers
+once, when it launches; editing the configuration afterwards does not move a
+server that is already running. `aegis doctor` scans the process table for
+servers running outside the proxy and fails if it finds one, but that is a
+heuristic — it cannot see inside an already-running client. A green report and
+an unmediated agent look identical from there.
 
 ## Undo it
 
