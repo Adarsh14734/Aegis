@@ -6,7 +6,10 @@
 from C6a, C6a **deleted**) · C3 (payload versioned, no chain invalidated)
 **Status:** both **VERIFIED (harness, macOS)**, plus a live-network run of the
 production resolution and TLS path. Neither reaches unqualified VERIFIED, which
-still needs a live Claude Code session with the client's own log captured.
+still needs a live Claude Code session with the client's own log captured. That
+gate was **unreachable** until now for a structural reason — see §C4's live tier
+needs a fetch-capable server. The wiring it needs now exists and is verified;
+the session itself is **NOT RUN**.
 Suite: **109 passed, 0 failed**, exit 0. Every prior suite at its documented
 figure.
 
@@ -45,6 +48,9 @@ URL, never sees the credential, never produces the response.
 | `evidence/S8-suite.txt` | Suite output plus a regression run of every prior suite |
 | `evidence/S8-live-network.txt` | Real DNS, real TLS, real host — nothing injected |
 | `evidence/S8-schema-compat.txt` | The real 85-row pre-S8 database, before and after migration |
+| `~/code/aegis-testlab/servers/fetch_server.py` | A deliberately obedient fetch MCP server, so a live session has something to call |
+| `tests/manual/c4-live-check.md` | The C4 live gate procedure. **NOT RUN** |
+| `evidence/S8-live-wiring.txt` | That wiring driven end to end by a script: fetch.py reached, server bypassed |
 
 `aegis/policy.py` is **unchanged**. The decision order, the allowlist, the SSRF
 lexical checks and the credential grant logic are all exactly as S3b/S4 left
@@ -216,6 +222,108 @@ rules:  6 row(s) under the v1 payload (written before S8), 2 under v2. A mixed
 
 ---
 
+## C4's live tier needs a fetch-capable server
+
+S1 set the bar for unqualified VERIFIED: *observed against live Claude Code,
+with the client's own session log captured.* For C4 that gate was not merely
+unmet, it was **unreachable**, and the reason is worth writing down because it
+is the second time this project has hit it.
+
+The testlab was wired to `@modelcontextprotocol/server-filesystem`, which
+exposes **no fetch tool**. A live model asked to fetch a URL therefore has
+nothing to call that crosses the proxy. It falls back to its client's own
+WebFetch — a native tool, not an MCP call — which never touches Aegis. The
+session then produces a transcript in which the model cheerfully fetched
+something and the audit log recorded nothing, and that is very easy to read as
+evidence when it is the precise opposite of evidence.
+
+**With a filesystem-only setup, C4 is never reached at all.** Not weakened, not
+partially applied: the code path does not execute, because no tool call that
+would enter it ever arrives. Any claim about C4 made from such a session is a
+claim about a control that did not run.
+
+This is the same structural shape S1 recorded for `delete_file`: *"MCP-layer
+mediation can never cover deletion on its own"* when the server's tool surface
+omits the operation. Generalised: **an MCP-layer control can only be exercised
+by a server that exposes the operation it mediates.** The tool surface decides
+which of Aegis's controls are reachable, and a control nobody can reach is
+indistinguishable — from the transcript — from a control that passed.
+
+### What was set up
+
+`~/code/aegis-testlab/servers/fetch_server.py`, wired through the proxy as a
+second server alongside `filesystem`:
+
+```json
+"fetchlab": {
+  "command": "python3",
+  "args": ["/Users/adarsh/code/aegis/aegis/proxy.py", "--",
+           "python3", "/Users/adarsh/code/aegis-testlab/servers/fetch_server.py"]
+}
+```
+
+Three properties, each deliberate:
+
+- **It is obedient.** Any request reaching it is performed with no allowlist, no
+  SSRF rejection and no redirect limit. A block observed with it downstream came
+  from Aegis and nowhere else — the same reasoning that makes
+  `tests/mock_fs_server.py` useful, applied one layer out. A real fetch server
+  with its own safeguards would take credit for Aegis's work.
+- **Its schema is Aegis's argument contract** (`url`, `method`, `headers`,
+  `body`). A server advertising a different shape would have the model produce
+  calls denied as `egress_not_performable`, which tests the contract rather than
+  the control.
+- **It records every frame it receives** to `fetchlab-received.jsonl`. That file
+  is the C4/C6 proof, because under S8 it must contain no `tools/call` at all.
+
+The client's own escape routes are closed in
+`~/code/aegis-testlab/.claude/settings.json`: `WebFetch`, `WebSearch`,
+`Bash(curl:*)` and `Bash(wget:*)` are denied. Those are exactly how a model
+answers the prompt without crossing Aegis, and leaving them open is how this
+procedure produces a green transcript that means nothing. **Note what that
+implies:** the routes are closed by the *client's* configuration, not by Aegis
+— the same caveat S1 recorded as gap #8, and it has not changed.
+
+### The wiring is verified; the session is not
+
+`evidence/S8-live-wiring.txt` drives the wired chain end to end with a script —
+real proxy, real fetch server, real network, the real audit database:
+
+```
+tools/list -> ['fetch']
+
+id=3 isError=False   <!doctype html>... Example Domain ...
+id=4 isError=True    AEGIS DENIED: fetch — host is not in allowed_domains
+id=5 isError=True    AEGIS DENIED: fetch — link-local address (cloud instance
+                     metadata lives here)
+
+=== WHAT THE DOWNSTREAM SERVER RECEIVED ===
+{"jsonrpc":"2.0","id":1,"method":"initialize",...}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+
+87|fetch|allow|tool_rules.fetch|example.com|200|68|874|2
+88|fetch|deny|egress_domain|||||2
+89|fetch|deny|egress_domain|||||2
+
+OK: 89 row(s) verified, chain intact
+rules:  85 row(s) under the v1 payload (written before S8), 4 under v2.
+```
+
+**No `tools/call` reached the server** — not the allowed fetch, not the denied
+ones. `tools/list` did, which is why the model can see the tool at all. The
+allowed row carries the destination, status and both byte counts. `aegis doctor`
+still exits 0 with both servers wired and now probes `fetchlab`.
+
+That establishes the chain works and that `fetch.py` is genuinely reached. It
+does **not** establish the live gate: a script is not a model, and the thing S1's
+bar is actually about is what a capable model does when told to route around a
+guardrail. `tests/manual/c4-live-check.md` is the procedure, with four prompts
+and an explicit list of what would make it fail. It is **NOT RUN**, and C4 stays
+at VERIFIED (harness, macOS) until someone runs it.
+
+---
+
 ## Verification
 
 | Suite | Result | Exit |
@@ -346,11 +454,20 @@ which is the number worth recording.
    The new columns make each row bigger; they do not make the chain harder to
    rewrite wholesale.
 10. **No live Claude Code session.** C4 and C6 are harness-verified. The gate
-    for unqualified VERIFIED is a live session where the model is asked to POST
-    workspace contents to an unlisted host and to use `${aegis:...}` against a
-    granted one, with the client's own log captured. That gate is still open for
-    C4a/C5a/C6a's successors exactly as it was.
-11. **Still reviewed by nobody but its author.** THREAT-MODEL.md §10 is empty
+    is now *reachable* — a fetch-capable server is wired and the chain is proven
+    end to end — but it has **NOT RUN**. `tests/manual/c4-live-check.md`.
+11. **Reachability is a property of the server's tool surface, and nothing
+    checks it.** With a filesystem-only setup C4 never executes, and neither
+    Aegis nor `aegis doctor` says so: doctor proves *a* call is mediated, not
+    that every control has something that can exercise it. A policy granting
+    `fetch` to a server with no fetch tool is a rule that can never fire, and it
+    looks identical to one that never had to. S1 gap #9 (no `tools/list`
+    reconciliation) is the fix for this and is still open.
+12. **The native-tool escape routes are closed by the client's config**, not by
+    Aegis. `WebFetch` and `Bash(curl:*)` are denied in the testlab's
+    `settings.json`; that is the agent's configuration, a user can edit it, and
+    a different client may not honour it. S1 gap #8, unchanged.
+13. **Still reviewed by nobody but its author.** THREAT-MODEL.md §10 is empty
     after nine sprints.
 
 ---
@@ -359,6 +476,13 @@ which is the number worth recording.
 
 ```bash
 python3 tests/s8.py
+```
+
+The live wiring, without a model — proves `fetch.py` is reached and the server
+is bypassed:
+
+```bash
+open tests/manual/c4-live-check.md
 ```
 
 The compatibility claim, against your own audit log rather than a fixture — on

@@ -1,0 +1,85 @@
+Aegis S8 — the fetch-capable testlab wiring, 2026-08-18 15:55:37 IST
+macOS 26.5.1 / Python 3.14.3
+
+WHAT THIS IS: the wiring the C4 live gate needs, driven end to end by a
+script rather than by a model. It establishes that the chain works and
+that fetch.py is reached. It does NOT establish the live gate itself —
+that needs a Claude Code session, and the procedure is in
+tests/manual/c4-live-check.md, still NOT RUN.
+
+=== ~/code/aegis-testlab/.mcp.json ===
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "python3",
+      "args": [
+        "/Users/adarsh/code/aegis/aegis/proxy.py",
+        "--",
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/adarsh/code/aegis-testlab/workspace"
+      ]
+    },
+    "fetchlab": {
+      "command": "python3",
+      "args": [
+        "/Users/adarsh/code/aegis/aegis/proxy.py",
+        "--",
+        "python3",
+        "/Users/adarsh/code/aegis-testlab/servers/fetch_server.py"
+      ]
+    }
+  }
+}
+
+=== the downstream server is deliberately obedient ===
+servers/fetch_server.py performs any request that reaches it with no
+allowlist, no SSRF check and no redirect limit — so a block observed with
+it downstream came from Aegis. Same reasoning as tests/mock_fs_server.py.
+
+=== drive: initialize, tools/list, three tools/call ===
+tools/list -> ['fetch']
+
+id=3 isError=False
+  <!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href="https://iana.org/domains/example">Learn more</a></p></div></body></html>
+
+id=4 isError=True
+  AEGIS DENIED: fetch
+  Reason: URL https://evil.xyz in arguments.url: host is not in allowed_domains
+  Rule: egress_domain
+  This action was blocked by policy and was not forwarded to the server.
+
+id=5 isError=True
+  AEGIS DENIED: fetch
+  Reason: URL http://169.254.169.254 in arguments.url: host is a raw IP literal — link-local address (cloud instance metadata lives here); list the address explicitly in allowed_domains to permit it
+  Rule: egress_domain
+  This action was blocked by policy and was not forwarded to the server.
+
+proxy exit 0
+
+=== WHAT THE DOWNSTREAM SERVER RECEIVED (the proof) ===
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "s8-live-drive", "version": "1"}}}
+{"jsonrpc": "2.0", "method": "notifications/initialized"}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+
+initialize, notifications/initialized, tools/list — and NO tools/call.
+Not the allowed fetch, not the denied ones. Aegis performed the request
+and the server was bypassed, which is the S8 property. tools/list is
+forwarded untouched, which is why the model can see the tool at all.
+
+=== audit rows the drive produced (real database) ===
+id|tool|effect|rule_id|host|status|req_bytes|resp_bytes|v
+87|fetch|allow|tool_rules.fetch|example.com|200|68|874|2
+88|fetch|deny|egress_domain|||||2
+89|fetch|deny|egress_domain|||||2
+
+=== chain ===
+OK: 89 row(s) verified, chain intact
+rules:  85 row(s) under the v1 payload (written before S8), 4 under v2. A mixed chain is normal after an upgrade and is not evidence of anything.
+db:     /Users/adarsh/Library/Application Support/Aegis/audit.db
+head:   8305689042c9550b5f37d33f6045c37dac74272c52ed528a1fb2ac0b97b5f0ff
+anchor: /Users/adarsh/Library/Application Support/Aegis/aegis-head.txt (written next to the db; not tamper-proof)
+anchor verified at row 89
+note: the anchor file lives beside the database and is not signed — it raises the effort of a silent truncation, it does not prevent one. A hash held outside this machine is worth more.
+exit 0
