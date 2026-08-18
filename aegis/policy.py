@@ -18,10 +18,18 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-import broker
-import dlp
-import egress
-import killswitch
+# S7: import plumbing only. Relative when loaded as `aegis.policy` (installed
+# package, `python -m aegis.proxy`), flat when this directory is on sys.path
+# (`python3 aegis/proxy.py`, the tests' sys.path.insert). Both forms have to
+# keep working: the second is what every .mcp.json written before S7 uses.
+# Nothing below this block changed in S7.
+try:
+    from . import broker, dlp, egress, killswitch
+except ImportError:  # pragma: no cover - exercised by running this as a script
+    import broker
+    import dlp
+    import egress
+    import killswitch
 
 
 class Effect(str, Enum):

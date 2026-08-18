@@ -21,11 +21,16 @@ import sys
 import time
 from pathlib import Path
 
-import approval
-import broker
-import trash
-from audit import AuditError, AuditStore, default_db_path
-from policy import Decision, Effect, Policy, PolicyError
+try:  # S7: see the note in policy.py. Import plumbing only.
+    from . import approval, broker, trash
+    from .audit import AuditError, AuditStore, default_db_path
+    from .policy import Decision, Effect, Policy, PolicyError
+except ImportError:  # pragma: no cover - exercised by running this as a script
+    import approval
+    import broker
+    import trash
+    from audit import AuditError, AuditStore, default_db_path
+    from policy import Decision, Effect, Policy, PolicyError
 
 LOG_PREFIX = "[aegis]"
 

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis-mcp"
+version = "0.7.0"
+description = "MCP-layer policy proxy with a tamper-evident audit trail"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Adarsh" }]
+keywords = ["mcp", "policy", "audit", "agent", "security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+# No runtime dependencies, deliberately. The trusted computing base is meant to
+# stay small enough to audit by hand (THREAT-MODEL.md B3), and every dependency
+# added here is code that runs inside it. The audit verifier goes further and
+# imports nothing from Aegis either (S0 open question #4).
+dependencies = []
+
+[project.optional-dependencies]
+# Credential storage (C6a) only. Absent, `aegis-secret` and any tool call
+# carrying a ${aegis:...} handle fail closed with a message naming this extra;
+# nothing else in Aegis notices. The import is lazy, inside aegis/broker.py, so
+# a missing keyring can never break proxy startup.
+keyring = ["keyring>=24"]
+
+[project.urls]
+Homepage = "https://github.com/aeon-industries/aegis"
+
+[project.scripts]
+aegis = "aegis.cli:main"
+aegis-secret = "aegis.broker:main"
+aegis-restore = "aegis.trash:main"
+# Both of these dispatch on argv[0] inside killswitch.main(), which is why they
+# share an entry point. Renaming either script changes its behaviour.
+aegis-stop = "aegis.killswitch:main"
+aegis-resume = "aegis.killswitch:main"
+
+[tool.setuptools]
+packages = ["aegis"]
+
+[tool.setuptools.package-data]
+aegis = ["policy.template.json"]

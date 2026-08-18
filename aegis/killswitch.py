@@ -39,7 +39,10 @@ def data_dir() -> Path:
     not be able to stop the operator's real agent, or read a stale KILLSWITCH
     from their real data directory.
     """
-    from audit import default_db_path  # noqa: PLC0415 - avoids an import cycle
+    try:  # noqa: PLC0415 - function-level to avoid an import cycle
+        from .audit import default_db_path
+    except ImportError:  # pragma: no cover - flat import when run as a script
+        from audit import default_db_path
 
     return default_db_path().parent
 

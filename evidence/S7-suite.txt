@@ -1,0 +1,251 @@
+Aegis S7 suite — 2026-08-17 20:35:44 IST, macOS 26.5.1, Python 3.14.3
+$ python3 tests/s7.py
+
+lab: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi
+fake HOME: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/home
+  pass  the operator's real Aegis state is untouched (before anything ran)
+
+==============================================================================
+1. packaging
+==============================================================================
+  pass  pyproject.toml exists
+  pass  pyproject.toml parses
+  pass  distribution is named aegis-mcp
+  pass  no runtime dependencies
+  pass  keyring is an optional extra, not a requirement
+  pass  console entry point 'aegis' is declared
+  pass  console entry point 'aegis-secret' is declared
+  pass  console entry point 'aegis-restore' is declared
+  pass  console entry point 'aegis-stop' is declared
+  pass  console entry point 'aegis-resume' is declared
+  pass  'aegis' resolves to a callable (aegis.cli:main)
+  pass  'aegis-restore' resolves to a callable (aegis.trash:main)
+  pass  'aegis-resume' resolves to a callable (aegis.killswitch:main)
+  pass  'aegis-secret' resolves to a callable (aegis.broker:main)
+  pass  'aegis-stop' resolves to a callable (aegis.killswitch:main)
+  pass  aegis.proxy is runnable as a module
+  pass  aegis/proxy.py is still runnable as a plain script (pre-S7 wiring)
+  pass  template and policy.example.json agree on deny_paths
+  pass  template and policy.example.json agree on every shared tool rule
+  pass  template default_effect is deny
+  pass  keyring absence is reported, not raised
+  pass  a missing keyring does not break importing the policy engine
+
+==============================================================================
+2. config wrapping (unit)
+==============================================================================
+  pass  a plain entry is not detected as wrapped
+  pass  a wrapped entry is detected as wrapped
+  pass  wrapping preserves env
+  pass  wrapping keeps the original command and args after '--'
+  pass  unwrap recovers the original entry
+  pass  double wrapping is refused
+  pass  an HTTP/SSE server is refused, with stdio named as the reason
+  pass  a -m aegis.proxy entry is recognised
+  pass  a proxy.py path entry is recognised (pre-S7 wiring)
+  pass  an unrelated python script is not recognised
+
+==============================================================================
+3. aegis init on a machine with no prior configuration
+==============================================================================
+  pass  init exits 0 on a machine with nothing installed
+  pass  init says it found no MCP configuration
+  pass  init writes the policy to the OS data directory
+  pass  policy.json is mode 0600
+  pass  the workspace root the user gave is the one written
+  pass  the deny list defaults to the current deny_paths
+  pass  default_effect is deny
+  pass  the written policy loads in the policy engine
+  pass  init points the user at doctor
+  pass  init states the boundary up front
+  pass  a custom deny list replaces the default
+  pass  re-running init shows a diff of the policy change
+  pass  re-running init backs the old policy up first
+  pass  init with no terminal and no --yes refuses rather than taking defaults
+  pass  ...and names the flags that would work
+  pass  a workspace root that does not exist is refused
+  pass  ...and says so rather than creating it
+
+==============================================================================
+3b. aegis init, driven interactively over a real terminal
+==============================================================================
+  pass  interactive init exits 0
+  pass  ...asked which folders the agent may work in
+  pass  ...asked which paths it must never open
+  pass  ...offered the current deny list as the default
+  pass  ...wrote the policy the answers describe
+  pass  ...with the typed workspace root
+  pass  ...and the default deny list, accepted with an empty line
+  pass  ...showed the config diff before touching it
+  pass  ...and wired the server
+  pass  declining the policy write exits non-zero
+  pass  ...and writes no policy
+  pass  ...and leaves the MCP config byte-identical
+
+==============================================================================
+4. aegis init refuses a workspace that would contain policy.json
+==============================================================================
+  pass  init exits non-zero when the policy would land inside a workspace root
+  pass  ...and says REFUSING
+  pass  ...and names the policy file and the root
+  pass  ...and explains why (a policy the agent can edit enforces nothing)
+  pass  ...and writes nothing at all
+  pass  the refusal covers the audit database and trash directory too
+
+==============================================================================
+5. aegis init patches an existing .mcp.json, showing the change
+==============================================================================
+  pass  init exits 0
+  pass  init lists the detected .mcp.json
+  pass  init prints a unified diff before writing
+  pass  init reports the backup it took
+  pass  the server is now wrapped
+  pass  the original command survives after '--'
+  pass  the server's env survives the patch
+  pass  a backup file exists
+  pass  a backup holds the original bytes exactly
+  pass  re-running init does not double-wrap
+  pass  ...and leaves the entry unchanged
+
+==============================================================================
+6. aegis doctor on a correct setup — the proof
+==============================================================================
+      | Aegis doctor
+      | ========================================================================
+      | project: /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/wired-project
+      | 
+      | [  ok  ] Policy file exists and parses
+      |            /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/home/Library/Application Support/Aegis/policy.json (mode 0o600)
+      |            15 tool rules, default effect 'deny', 5 deny patterns
+      | [  ok  ] Policy file is outside every workspace root
+      |            policy: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/home/Library/Application Support/Aegis/policy.json
+      |            workspace roots: /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/wired-project/workspace
+      |            The agent can write anywhere inside a workspace root, so a policy inside one would be a policy the agent can rewrite.
+      | [  ok  ] Audit database is writable
+      |            /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/home/Library/Application Support/Aegis/audit.db (mode 0o600)
+      | [  ok  ] Audit chain verifies
+      |            OK: 0 row(s) verified, chain intact
+      |            The log is empty. An empty chain is a valid chain — this says nothing has been recorded yet, not that nothing has happened.
+      | [ warn ] Head anchor
+      |            none at /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/home/Library/Application Support/Aegis/aegis-head.txt
+      |            Written when a proxy shuts down cleanly. Without it, rows deleted off the end of the log are invisible to the verifier.
+      | [  ok  ] Credential storage (keyring)
+      |            backend: Keyring
+      |            handles granted in policy: none
+      | [  ok  ] MCP configuration points at the proxy
+      |            mockfs -> Aegis proxy   (/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/wired-project/.mcp.json)
+      | [  ok  ] PROOF: a real tool call is denied and recorded
+      |            server 'mockfs' from /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/wired-project/.mcp.json
+      |            ran: /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 /Users/adarsh/code/aegis/aegis/proxy.py -- /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 /Users/adarsh/code/aegis/tests/mock_fs_server.py /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/wired-project/workspace
+      |            asked it to open /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi/home/.ssh/aegis-doctor-probe (a file in your ssh directory) with the 'read_text_file' tool, which this policy otherwise allows
+      |            it answered: AEGIS DENIED
+      |            audit row 1 appeared (was 0): tool=read_text_file effect=deny rule=deny_paths
+      |            the chain still verifies with that row in it
+      |            The proxy is in the pipe. This is the only check here that shows that; every other one reads a file.
+      | 
+      | ========================================================================
+      | All checks passed.
+      | 
+      | WHAT THIS DOES NOT COVER
+      | ========================
+      | Everything above concerns tool calls that cross an MCP stdio pipe Aegis was put
+      | in front of. That is a narrow boundary, and these are outside it:
+      | 
+      |   Bash, and every shell command.  An agent that runs `cat ~/.ssh/id_rsa` never
+      |   touches this proxy. In the S1 live test three of the model's four attempts on
+      |   a secret went through Bash; Aegis blocked none of them — the client's own
+      |   permission rules did. Those rules are your agent's configuration, not an
+      |   Aegis control, and a different client may not have them.
+      | 
+      |   Native file tools built into the agent (Read, Write, Edit in Claude Code).
+      |   Same pipe, same absence: they are not MCP calls.
+      | 
+      |   MCP servers not routed through the proxy.  Listed above if any were found.
+      | 
+      |   Anything the downstream server does on its own — the requests it makes, the
+      |   files it touches that were not named in the call's arguments.
+      | 
+      |   Malware already on this machine, and anyone with root.  Both can edit the
+      |   policy, the audit database, and the head anchor.
+      | 
+      |   Deleting the whole audit database.  An empty chain is a valid chain.
+      | 
+  pass  doctor exits 0 on a correct setup
+  pass  doctor reports the policy check
+  pass  doctor reports the policy is outside every workspace root
+  pass  doctor reports the audit database is writable
+  pass  doctor reports the chain verifies
+  pass  doctor reports keyring
+  pass  doctor reports the MCP wiring
+  pass  doctor ran the live probe
+  pass  doctor's proof passed
+  pass  doctor saw AEGIS DENIED come back
+  pass  doctor observed a new audit row
+  pass  doctor re-verified the chain with that row in it
+  pass  the audit log actually gained exactly one row
+  pass  doctor prints what it does not cover
+  pass  ...and names Bash explicitly
+  pass  ...and names native agent file tools
+  pass  ...and points at the full threat model
+
+==============================================================================
+7. aegis doctor with the proxy NOT wired in — the case that matters
+==============================================================================
+  pass  doctor exits NON-ZERO when the proxy is not in the pipe
+  pass  doctor fails the wiring check
+  pass  doctor fails the proof
+  pass  doctor refuses to send the probe through an unwrapped server
+  pass  doctor says the setup has no MCP-layer control at all
+  pass  no audit row was written by the failed run
+  pass  doctor still passed the file-only checks (which is the point)
+  pass  the unwrapped server really does execute the call doctor refused to send
+
+==============================================================================
+8. aegis doctor with a tampered chain
+==============================================================================
+  pass  doctor exits non-zero on a tampered chain
+  pass  doctor fails the chain check
+  pass  ...and says the record has been altered
+  pass  ...and says nothing below it can be cited
+  pass  --no-probe is reported as proving nothing
+
+==============================================================================
+9. aegis uninstall
+==============================================================================
+  pass  init changed the config
+  pass  there is an audit log with rows in it to preserve
+  pass  uninstall exits 0
+  pass  uninstall shows the change it is about to make
+  pass  uninstall restores the original config BYTE FOR BYTE
+  pass  the audit database is left in place
+  pass  ...with every row still in it
+  pass  the policy is left in place
+  pass  uninstall says where the audit log is
+  pass  uninstall says where the policy is
+  pass  uninstall says where the backups are
+  pass  uninstall does not offer to delete the audit trail
+  pass  a second uninstall is a no-op, not an error
+  pass  ...and says the file already matches the backup
+  pass  doctor fails again once uninstall has removed the wiring
+
+==============================================================================
+SUMMARY
+==============================================================================
+  pass  the operator's real Aegis state is untouched (after everything ran)
+
+  125 passed, 0 failed
+
+  lab: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s7-0mqilqgi   (delete when done)
+
+  NOT established by this run:
+    - installation from a built wheel into a clean venv (see S7-REPORT.md;
+      done by hand, not here, because it needs the network)
+    - a live Claude Code session driven through `aegis init` output
+
+
+=== regression, same working tree ===
+tests/tamper.py  exit 0   all cases behaved as specified
+tests/s3a.py     exit 0   99 passed, 0 failed
+tests/s3b.py     exit 0   60 passed, 0 failed
+tests/s4.py      exit 1   65 passed, 0 failed, 2 NOT RUN
+tests/s5.py      exit 1   80 passed, 0 failed, 1 NOT RUN

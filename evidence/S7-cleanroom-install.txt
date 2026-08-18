@@ -1,0 +1,106 @@
+Aegis S7 — clean-room install from a built wheel, 2026-08-17 19:43:55 IST
+macOS 26.5.1, Python 3.14.3
+lab: /tmp/aegis-cleanroom.kEdaT3   fake HOME: /tmp/aegis-cleanroom.kEdaT3/home   (no prior Aegis state)
+
+$ python3 -m venv venv && venv/bin/pip install /Users/adarsh/code/aegis
+Name: aegis-mcp
+Version: 0.7.0
+Summary: MCP-layer policy proxy with a tamper-evident audit trail
+Home-page: https://github.com/aeon-industries/aegis
+Author: Adarsh
+Author-email: 
+License-Expression: MIT
+Location: /private/tmp/aegis-cleanroom.kEdaT3/venv/lib/python3.14/site-packages
+
+$ ls venv/bin | grep aegis
+aegis
+aegis-restore
+aegis-resume
+aegis-secret
+aegis-stop
+
+$ aegis version
+aegis-mcp 0.7.0
+
+=== the wiring aegis init wrote (installed package -> -m aegis.proxy) ===
+{
+  "mcpServers": {
+    "mockfs": {
+      "command": "/private/tmp/aegis-cleanroom.kEdaT3/venv/bin/python",
+      "args": [
+        "-m",
+        "aegis.proxy",
+        "--",
+        "/tmp/aegis-cleanroom.kEdaT3/venv/bin/python",
+        "/tmp/aegis-cleanroom.kEdaT3/mock_fs_server.py",
+        "/tmp/aegis-cleanroom.kEdaT3/proj/workspace"
+      ]
+    }
+  }
+}
+
+$ aegis doctor    # wired
+Aegis doctor
+========================================================================
+project: /private/tmp/aegis-cleanroom.kEdaT3/proj
+
+[  ok  ] Policy file exists and parses
+           /tmp/aegis-cleanroom.kEdaT3/home/Library/Application Support/Aegis/policy.json (mode 0o600)
+           15 tool rules, default effect 'deny', 5 deny patterns
+[  ok  ] Policy file is outside every workspace root
+           policy: /tmp/aegis-cleanroom.kEdaT3/home/Library/Application Support/Aegis/policy.json
+           workspace roots: /private/tmp/aegis-cleanroom.kEdaT3/proj/workspace
+           The agent can write anywhere inside a workspace root, so a policy inside one would be a policy the agent can rewrite.
+[  ok  ] Audit database is writable
+           /tmp/aegis-cleanroom.kEdaT3/home/Library/Application Support/Aegis/audit.db (mode 0o600)
+[  ok  ] Audit chain verifies
+           OK: 1 row(s) verified, chain intact
+[  ok  ] Head anchor matches
+           /tmp/aegis-cleanroom.kEdaT3/home/Library/Application Support/Aegis/aegis-head.txt
+           Local and unsigned: anyone who can rewrite the database can rewrite this too. Keep a copy of the head hash off this machine.
+[ warn ] Credential storage (keyring)
+           ModuleNotFoundError: No module named 'keyring'
+           No credential handles are granted in policy, so nothing needs it today. Calls carrying a ${aegis:...} handle would be denied, not sent unprotected.
+           Install it with: pip install 'aegis-mcp[keyring]'
+[  ok  ] MCP configuration points at the proxy
+           mockfs -> Aegis proxy   (/private/tmp/aegis-cleanroom.kEdaT3/proj/.mcp.json)
+[  ok  ] PROOF: a real tool call is denied and recorded
+           server 'mockfs' from /private/tmp/aegis-cleanroom.kEdaT3/proj/.mcp.json
+           ran: /private/tmp/aegis-cleanroom.kEdaT3/venv/bin/python -m aegis.proxy -- /tmp/aegis-cleanroom.kEdaT3/venv/bin/python /tmp/aegis-cleanroom.kEdaT3/mock_fs_server.py /tmp/aegis-cleanroom.kEdaT3/proj/workspace
+           asked it to open /tmp/aegis-cleanroom.kEdaT3/home/.ssh/aegis-doctor-probe (a file in your ssh directory) with the 'read_text_file' tool, which this policy otherwise allows
+           it answered: AEGIS DENIED
+           audit row 2 appeared (was 1): tool=read_text_file effect=deny rule=deny_paths
+           the chain still verifies with that row in it
+           The proxy is in the pipe. This is the only check here that shows that; every other one reads a file.
+
+========================================================================
+All checks passed.
+
+WHAT THIS DOES NOT COVER
+========================
+Everything above concerns tool calls that cross an MCP stdio pipe Aegis was put
+in front of. That is a narrow boundary, and these are outside it:
+
+  Bash, and every shell command.  An agent that runs `cat ~/.ssh/id_rsa` never
+  touches this proxy. In the S1 live test three of the model's four attempts on
+  a secret went through Bash; Aegis blocked none of them — the client's own
+  permission rules did. Those rules are your agent's configuration, not an
+  Aegis control, and a different client may not have them.
+
+  Native file tools built into the agent (Read, Write, Edit in Claude Code).
+  Same pipe, same absence: they are not MCP calls.
+
+  MCP servers not routed through the proxy.  Listed above if any were found.
+
+  Anything the downstream server does on its own — the requests it makes, the
+  files it touches that were not named in the call's arguments.
+
+  Malware already on this machine, and anyone with root.  Both can edit the
+  policy, the audit database, and the head anchor.
+
+  Deleting the whole audit database.  An empty chain is a valid chain.
+
+THREAT-MODEL.md §7 is the full list and it is longer than this. Read it before
+describing Aegis to anyone else.
+
+EXIT 0

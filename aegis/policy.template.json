@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "workspace_roots": [],
+  "deny_paths": [".env", "*.pem", "id_rsa", "**/.aws/**", "**/.ssh/**"],
+  "allowed_domains": [],
+  "tool_rules": {
+    "read_file":                  {"effect": "allow", "within": ["<workspace>"]},
+    "read_text_file":             {"effect": "allow", "within": ["<workspace>"]},
+    "read_multiple_files":        {"effect": "allow", "within": ["<workspace>"]},
+    "read_media_file":            {"effect": "allow", "within": ["<workspace>"]},
+    "list_directory":             {"effect": "allow", "within": ["<workspace>"]},
+    "list_directory_with_sizes":  {"effect": "allow", "within": ["<workspace>"]},
+    "directory_tree":             {"effect": "allow", "within": ["<workspace>"]},
+    "search_files":               {"effect": "allow", "within": ["<workspace>"]},
+    "get_file_info":              {"effect": "allow", "within": ["<workspace>"]},
+    "list_allowed_directories":   {"effect": "allow"},
+    "write_file":                 {"effect": "allow", "within": ["<workspace>"]},
+    "create_directory":           {"effect": "allow", "within": ["<workspace>"]},
+    "edit_file":                  {"effect": "allow", "within": ["<workspace>"]},
+    "move_file":                  {"effect": "ask",   "within": ["<workspace>"], "destructive": true},
+    "delete_file":                {"effect": "deny",  "destructive": true}
+  },
+  "bulk_threshold": 10,
+  "ask_timeout_seconds": 120,
+  "trash_dir": null,
+  "default_effect": "deny",
+  "ask_behavior": "prompt"
+}

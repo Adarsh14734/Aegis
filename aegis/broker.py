@@ -200,6 +200,22 @@ def secret_exists(handle: str) -> bool:
         return False
 
 
+def keyring_available() -> tuple[bool, str]:
+    """(usable, why not). S7: `secret_exists` answers False both when the
+    library is absent and when the handle is simply unset, which is the right
+    answer for the substitution path — neither can produce a secret — and the
+    wrong thing to print at a user, who would go looking for a handle that was
+    never the problem. The CLI asks this first so the two read differently.
+    """
+    try:
+        _keyring()
+    except BrokerError as exc:
+        return False, str(exc)
+    except BaseException as exc:  # noqa: BLE001 - a broken backend, same outcome
+        return False, f"the keyring library failed to load ({type(exc).__name__})"
+    return True, ""
+
+
 # ---- substitution --------------------------------------------------------
 
 
@@ -397,6 +413,19 @@ def main(argv=None) -> int:
         return 0 if argv else 64
 
     command, rest = argv[0], argv[1:]
+
+    # S7: say so once, up front, rather than reporting every handle as MISSING
+    # and letting the user hunt for a secret that was never the problem.
+    usable, why = keyring_available()
+    if not usable:
+        print(f"aegis-secret: {why}", file=sys.stderr)
+        print(
+            "aegis-secret: install it with: pip install 'aegis-mcp[keyring]'",
+            file=sys.stderr,
+        )
+        if command in ("set", "delete", "check"):
+            return 1
+
     if command == "list":
         return _cmd_list()
     if command not in ("set", "delete", "check") or len(rest) != 1:

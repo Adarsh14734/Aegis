@@ -1,0 +1,83 @@
+Aegis S7 — aegis doctor on the real installation, 2026-08-17 19:44:38 IST
+macOS 26.5.1 / Python 3.14.3
+project: /Users/adarsh/code/aegis-testlab   (the real aegis-testlab, wired since S1)
+policy:  ~/Library/Application Support/Aegis/policy.json  (real)
+audit:   ~/Library/Application Support/Aegis/audit.db     (real)
+
+The .mcp.json here predates S7 and uses the old wiring form
+  python3 /Users/adarsh/code/aegis/aegis/proxy.py -- npx -y @modelcontextprotocol/server-filesystem ...
+so this also checks S7 recognises configs written before it existed.
+
+=== rows before ===
+83
+
+$ aegis doctor --timeout 120
+Aegis doctor
+========================================================================
+project: /Users/adarsh/code/aegis-testlab
+
+[  ok  ] Policy file exists and parses
+           /Users/adarsh/Library/Application Support/Aegis/policy.json (mode 0o600)
+           16 tool rules, default effect 'deny', 5 deny patterns
+[  ok  ] Policy file is outside every workspace root
+           policy: /Users/adarsh/Library/Application Support/Aegis/policy.json
+           workspace roots: /Users/adarsh/code/aegis-testlab/workspace
+           The agent can write anywhere inside a workspace root, so a policy inside one would be a policy the agent can rewrite.
+[  ok  ] Audit database is writable
+           /Users/adarsh/Library/Application Support/Aegis/audit.db (mode 0o600)
+[  ok  ] Audit chain verifies
+           OK: 83 row(s) verified, chain intact
+[  ok  ] Head anchor matches
+           /Users/adarsh/Library/Application Support/Aegis/aegis-head.txt
+           Local and unsigned: anyone who can rewrite the database can rewrite this too. Keep a copy of the head hash off this machine.
+[  ok  ] Credential storage (keyring)
+           backend: Keyring
+           handles granted in policy: none
+[  ok  ] MCP configuration points at the proxy
+           filesystem -> Aegis proxy   (/Users/adarsh/code/aegis-testlab/.mcp.json)
+[  ok  ] PROOF: a real tool call is denied and recorded
+           server 'filesystem' from /Users/adarsh/code/aegis-testlab/.mcp.json
+           ran: python3 /Users/adarsh/code/aegis/aegis/proxy.py -- npx -y @modelcontextprotocol/server-filesystem /Users/adarsh/code/aegis-testlab/workspace
+           asked it to open /Users/adarsh/.ssh/aegis-doctor-probe (a file in your ssh directory) with the 'read_text_file' tool, which this policy otherwise allows
+           it answered: AEGIS DENIED
+           audit row 84 appeared (was 83): tool=read_text_file effect=deny rule=deny_paths
+           the chain still verifies with that row in it
+           The proxy is in the pipe. This is the only check here that shows that; every other one reads a file.
+
+========================================================================
+All checks passed.
+
+WHAT THIS DOES NOT COVER
+========================
+Everything above concerns tool calls that cross an MCP stdio pipe Aegis was put
+in front of. That is a narrow boundary, and these are outside it:
+
+  Bash, and every shell command.  An agent that runs `cat ~/.ssh/id_rsa` never
+  touches this proxy. In the S1 live test three of the model's four attempts on
+  a secret went through Bash; Aegis blocked none of them — the client's own
+  permission rules did. Those rules are your agent's configuration, not an
+  Aegis control, and a different client may not have them.
+
+  Native file tools built into the agent (Read, Write, Edit in Claude Code).
+  Same pipe, same absence: they are not MCP calls.
+
+  MCP servers not routed through the proxy.  Listed above if any were found.
+
+  Anything the downstream server does on its own — the requests it makes, the
+  files it touches that were not named in the call's arguments.
+
+  Malware already on this machine, and anyone with root.  Both can edit the
+  policy, the audit database, and the head anchor.
+
+  Deleting the whole audit database.  An empty chain is a valid chain.
+
+THREAT-MODEL.md §7 is the full list and it is longer than this. Read it before
+describing Aegis to anyone else.
+
+EXIT 0
+
+=== rows after, and the row doctor caused ===
+84
+84|read_text_file|deny|deny_paths
+83|fetch|deny|egress_domain
+82|write_file|deny|dlp
