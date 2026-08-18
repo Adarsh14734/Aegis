@@ -9,6 +9,15 @@ Sections:
   6. Exceptions on the substitution path do not carry the value
   7. The real `keyring` library, against a temporary file backend
 
+REVISED IN S8. Sections 3, 5 and 6 drove credentials through the *substitution*
+path: Aegis put the plaintext into the tool arguments and forwarded them to the
+MCP server. S8 deleted that path — a credential now goes onto a request Aegis
+makes itself (aegis/fetch.py), and a handle on a tool that cannot reach it is
+denied. Those sections therefore now assert the S8 truth, against a real HTTP
+origin on 127.0.0.1 rather than against the echo MCP server, which is no longer
+in the path at all. What each one used to assert is recorded in S8-REPORT.md.
+Sections 1, 2, 4 and 7 are unchanged in substance.
+
 Sections 1-6 use tests/fixtures/keyring.py so the real login keychain is never
 touched. Section 7 exercises the real library, and skips with a message if it
 is not installed rather than pretending it passed.
@@ -34,6 +43,9 @@ sys.path.insert(0, str(ROOT / "aegis"))
 
 import broker  # noqa: E402
 from policy import Policy, PolicyError  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "tests"))
+import http_target  # noqa: E402
 
 PROXY = ROOT / "aegis" / "proxy.py"
 ECHO = ROOT / "tests" / "echo_server.py"
@@ -101,11 +113,19 @@ LAB = Path(tempfile.mkdtemp(prefix="aegis-s4-"))
 WS = LAB / "workspace"
 WS.mkdir()
 
+# S8: the far side of a credentialed request is now an HTTP origin, not the MCP
+# server. 127.0.0.1 is addressed literally and listed in allowed_domains — the
+# documented operator opt-in — so the proxy subprocess resolves it through the
+# production socket path with nothing injected.
+TARGET_LOG = LAB / "origin-requests.jsonl"
+TARGET, PORT = http_target.serve(str(TARGET_LOG))
+LOCAL = f"http://127.0.0.1:{PORT}"
+
 POLICY_DOC = {
     "version": 1,
     "workspace_roots": [str(WS)],
     "deny_paths": [".env"],
-    "allowed_domains": ["api.github.com", "example.com"],
+    "allowed_domains": ["api.github.com", "example.com", "127.0.0.1"],
     "default_effect": "deny",
     "ask_behavior": "deny",
     "tool_rules": {
@@ -113,8 +133,8 @@ POLICY_DOC = {
         "write_file": {"effect": "allow", "within": ["<workspace>"]},
     },
     "credentials": {
-        "github_token": {"tools": ["fetch"], "hosts": ["api.github.com"]},
-        "escaped_token": {"tools": ["fetch"], "hosts": ["api.github.com"]},
+        "github_token": {"tools": ["fetch"], "hosts": ["api.github.com", "127.0.0.1"]},
+        "escaped_token": {"tools": ["fetch"], "hosts": ["api.github.com", "127.0.0.1"]},
         "unscoped": {},
         "no_hosts": {"tools": ["fetch"]},
     },
@@ -242,28 +262,36 @@ check(SECRET not in p.stdout and SECRET not in p.stderr,
 
 # ---- 3. end to end --------------------------------------------------------
 
-rule("3. END-TO-END SUBSTITUTION THROUGH THE REAL PROXY")
+rule("3. END-TO-END CREDENTIAL USE THROUGH THE REAL PROXY (S8 path)")
 
+# S8: Aegis makes the request. The MCP server is bypassed, so the far side is
+# the HTTP origin and the question "did the plaintext reach the wire" is
+# answered from that origin's own request log rather than from a tool result.
 p, db = run_proxy([
-    ("fetch", {"url": GH, "headers": ["Authorization: token ${aegis:github_token}"],
-               "echo_mode": "none"}),
+    ("fetch", {"url": f"{LOCAL}/echo",
+               "headers": {"Authorization": "token ${aegis:github_token}"}}),
 ], ENV)
 frame = json.loads(p.stdout.strip().splitlines()[0])
-echoed = frame["result"]["content"][0]["text"]
-check(SECRET in echoed or "[AEGIS-REDACTED" in echoed,
-      "the server received something in place of the handle", echoed[:120])
-check("${aegis:github_token}" not in echoed,
-      "the server did NOT receive the literal handle", echoed[:120])
-check("[AEGIS-REDACTED:github_token]" in echoed,
-      "...and what came back to the model is redacted, not the value", echoed[:160])
+body = frame["result"]["content"][0]["text"]
+
+arrived = [json.loads(l) for l in TARGET_LOG.read_text().splitlines() if l.strip()]
+check(bool(arrived), "the request reached the origin", str(arrived)[:120])
+check(SECRET in (arrived[-1]["headers"].get("authorization") or ""),
+      "the origin received the real credential on the wire",
+      str(arrived[-1]["headers"].get("authorization"))[:60])
+check("${aegis:github_token}" not in json.dumps(arrived[-1]),
+      "the origin did NOT receive the literal handle", json.dumps(arrived[-1])[:160])
+check("[AEGIS-REDACTED:github_token]" in body,
+      "...and what came back to the model is redacted, not the value", body[:160])
 check(SECRET not in p.stdout, "the value never reaches the client stream")
 
-# prove the server really got the plaintext, by having it write the value to a
-# file the test can read rather than returning it
+# The MCP server is not merely uninvolved by convention: nothing was forwarded.
 p2, _ = run_proxy([
-    ("fetch", {"url": GH, "headers": ["${aegis:github_token}"]}),
+    ("fetch", {"url": f"{LOCAL}/ok", "headers": {"Authorization": "${aegis:github_token}"}}),
 ], ENV, server=MOCK)
-check(p2.returncode == 0, "a substituted call is forwarded and completes")
+check(p2.returncode == 0, "a credentialed call completes without the server")
+check("MOCK SERVER" not in p2.stdout,
+      "...and the MCP server produced no part of the answer", p2.stdout[:160])
 
 
 # ---- 4. disclosure at byte level -----------------------------------------
@@ -287,10 +315,15 @@ for r in rows:
 joined = json.dumps(rows)
 check(SECRET not in joined, "secret absent from the audit rows")
 check("github_token" in joined, "the handle NAME is recorded")
-check(any("substituted credential handle" in r[3] for r in rows),
-      "the audit says substitution occurred")
-check(any(r[2] == "credential_redacted" for r in rows),
-      "the audit records that a redaction happened")
+check(any("used credential handle" in r[3] for r in rows),
+      "the audit says which handle was spent", str(rows)[:200])
+check(any("request performed by Aegis" in r[3] for r in rows),
+      "the audit says Aegis made the request itself", str(rows)[:200])
+check(any("echoed the credential back" in r[3] for r in rows),
+      "the audit records that the far side echoed it and it was redacted",
+      str(rows)[:300])
+check(any(r[2].startswith("tool_rules.fetch") for r in rows),
+      "the egress row cites the tool rule", str(rows)[:200])
 v = subprocess.run([sys.executable, str(ROOT / "aegis" / "verify.py"), str(db)],
                    capture_output=True, text=True)
 check(v.returncode == 0, "chain still verifies", (v.stdout + v.stderr)[:120])
@@ -304,20 +337,26 @@ check(all(r[0] == "credential_denied" for r in drows),
 
 rule("5. A SERVER THAT ECHOES THE CREDENTIAL BACK")
 
-for mode, label in (("text", "in a normal result"), ("error", "inside an error message")):
+# S8: the echo comes from the origin now — /echo reflects the request headers,
+# so the credential really is in the response body before Aegis strips it.
+for route, label in (("/echo", "in a normal result"), ("/status/500", "with an error status")):
     pe, dbe = run_proxy([
-        ("fetch", {"url": GH, "headers": ["token ${aegis:github_token}"],
-                   "echo_mode": mode}),
+        ("fetch", {"url": f"{LOCAL}{route}",
+                   "headers": {"Authorization": "token ${aegis:github_token}"}}),
     ], ENV)
-    check(SECRET not in pe.stdout, f"echoed credential {label} is redacted")
-    check("[AEGIS-REDACTED:github_token]" in pe.stdout,
-          f"...and replaced by a named marker {label}", pe.stdout[:140])
-    n = sqlite3.connect(str(dbe)).execute(
-        "SELECT count(*) FROM audit WHERE rule_id='credential_redacted'").fetchone()[0]
-    check(n >= 1, f"redaction audited {label}")
+    check(SECRET not in pe.stdout, f"an echoed credential {label} is redacted",
+          pe.stdout[:160])
+    if route == "/echo":
+        check("[AEGIS-REDACTED:github_token]" in pe.stdout,
+              f"...and replaced by a named marker {label}", pe.stdout[:200])
+        n = sqlite3.connect(str(dbe)).execute(
+            "SELECT count(*) FROM audit WHERE reason LIKE '%echoed the credential%'"
+        ).fetchone()[0]
+        check(n >= 1, f"the redaction is audited {label}")
 
 pe, _ = run_proxy([
-    ("fetch", {"url": GH, "headers": ["${aegis:escaped_token}"], "echo_mode": "text"}),
+    ("fetch", {"url": f"{LOCAL}/echo",
+               "headers": {"Authorization": "${aegis:escaped_token}"}}),
 ], ENV)
 check(SECRET2 not in pe.stdout, "a secret with quotes and backslashes is redacted")
 check(json.dumps(SECRET2)[1:-1] not in pe.stdout,
@@ -330,7 +369,7 @@ rule("6. EXCEPTIONS ON THE SUBSTITUTION PATH")
 
 # a backend that puts the secret into its own exception message
 pf, dbf = run_proxy([
-    ("fetch", {"url": GH, "headers": ["${aegis:github_token}"]}),
+    ("fetch", {"url": f"{LOCAL}/ok", "headers": {"Authorization": "${aegis:github_token}"}}),
 ], {**ENV, "AEGIS_TEST_KEYRING_RAISES": "1"})
 check('"isError": true' in pf.stdout, "the call is denied when the backend fails")
 check("credential_unavailable" in pf.stdout, "with rule_id credential_unavailable",
@@ -342,7 +381,8 @@ fblob = Path(str(dbf)).read_bytes().decode("latin-1")
 check(SECRET not in fblob, "...nor the audit db")
 
 # missing secret
-pm, _ = run_proxy([("fetch", {"url": GH, "headers": ["${aegis:github_token}"]})],
+pm, _ = run_proxy([("fetch", {"url": f"{LOCAL}/ok",
+                              "headers": {"Authorization": "${aegis:github_token}"}})],
                   {**ENV, "AEGIS_TEST_SECRETS": "{}"})
 check("credential_unavailable" in pm.stdout, "a missing secret denies the call",
       pm.stdout[:200])

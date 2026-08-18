@@ -22,12 +22,13 @@ import time
 from pathlib import Path
 
 try:  # S7: see the note in policy.py. Import plumbing only.
-    from . import approval, broker, trash
+    from . import approval, broker, fetch, trash
     from .audit import AuditError, AuditStore, default_db_path
     from .policy import Decision, Effect, Policy, PolicyError
 except ImportError:  # pragma: no cover - exercised by running this as a script
     import approval
     import broker
+    import fetch
     import trash
     from audit import AuditError, AuditStore, default_db_path
     from policy import Decision, Effect, Policy, PolicyError
@@ -82,9 +83,11 @@ class Proxy:
         self.ask_timeout = policy.ask_timeout_seconds
         self.stats = {
             "seen": 0, "allowed": 0, "denied": 0, "audit_failures": 0,
-            "substituted": 0, "redactions": 0,
+            "redactions": 0,
             "approvals_requested": 0, "approvals_granted": 0,
             "trash_snapshots": 0, "trash_failures": 0,
+            "egress_performed": 0, "egress_denied": 0,
+            "egress_bytes_out": 0, "egress_bytes_in": 0,
         }
 
     def decide(self, message: dict) -> Decision:
@@ -197,51 +200,43 @@ class Proxy:
         )
 
     def substitute(self, message: dict, decision: Decision):
-        """Fill in credential handles for a call that policy has ALLOWED.
+        """S8: there is no substitution into a forwarded call any more.
 
-        Returns (message_to_forward, decision, handles). The decision comes
-        back DENY if a secret could not be resolved: a call carrying an
-        unresolvable handle would otherwise reach the server with a literal
-        '${aegis:...}' in it, which is a broken credential and a leak of the
-        handle name to the server for no benefit.
+        S4 replaced ${aegis:...} with the plaintext and handed the arguments to
+        the MCP server. That kept the value out of the *model's* context (C6a)
+        and gave it to a server THREAT-MODEL.md §3 names as adversary T3 — the
+        gap S4-REPORT.md called "the big one". S8 makes the request itself
+        instead, so the sanctioned path for a credential is `fetch.py` and it is
+        reached before this method (see pump_client_to_server).
 
-        Only reached when the policy chain returned ALLOW, so a denied call
-        never causes a keychain read. That ordering is the reason this lives
-        here and not in policy.py.
+        Reaching here with a handle therefore means the call cannot use that
+        path: the tool does not declare `"egress": true`. That is denied, not
+        substituted. Leaving the old path alive "just for those tools" would
+        leave a route by which a plaintext credential still reaches a server,
+        and then C6 would be a claim about configuration rather than about code.
+
+        Returns (message_to_forward, decision, handles) as before.
         """
         params = message.get("params") or {}
         args = params.get("arguments")
-        if not isinstance(args, dict) or not broker.find_handles(args):
+        if not isinstance(args, dict):
+            return message, decision, ()
+        handles = broker.find_handles(args)
+        if not handles:
             return message, decision, ()
 
-        try:
-            filled, resolved = broker.substitute(args, redactor=self.redactor)
-        except broker.BrokerError as exc:
-            # exc is already scrubbed and unchained by broker.substitute.
-            return message, Decision(
-                Effect.DENY,
-                f"credential substitution failed: {exc}",
-                "credential_unavailable",
-                decision.tool,
-                decision.paths,
-            ), ()
-        except BaseException as exc:  # noqa: BLE001 - belt and braces
-            return message, Decision(
-                Effect.DENY,
-                f"credential substitution raised {type(exc).__name__}; "
-                f"details withheld in case they carry a secret",
-                "credential_unavailable",
-                decision.tool,
-                decision.paths,
-            ), ()
-
-        handles = tuple(sorted(resolved))
-        self.stats["substituted"] += 1
-        # Rebuild the frame around the filled arguments. From here the message
-        # holds plaintext credentials: it goes to the server and nowhere else,
-        # and must never be logged.
-        forwarded = {**message, "params": {**params, "arguments": filled}}
-        return forwarded, decision, handles
+        names = ", ".join(sorted({h for _, h in handles}))
+        return message, Decision(
+            Effect.DENY,
+            f"credential handle(s) {names} were used with {decision.tool!r}, "
+            f"which does not declare \"egress\": true. Aegis only supplies a "
+            f"credential to a request it makes itself, so there is no way to "
+            f"use one here without handing the plaintext to the MCP server. "
+            f"Declare the tool's egress flag, or do not use a handle with it.",
+            "credential_requires_egress",
+            decision.tool,
+            decision.paths,
+        ), ()
 
     def redact_frame(self, line: bytes) -> bytes:
         """Strip any substituted credential out of a server response.
@@ -289,6 +284,91 @@ class Proxy:
             self.stats["audit_failures"] += 1
 
         return redacted.encode("utf-8", errors="surrogateescape")
+
+    async def perform_egress(self, message: dict, decision: Decision, loop):
+        """S8. Aegis makes the request; the server is never told about it.
+
+        Returns the frame to write back to the client, having already recorded
+        the row. This is the C4/C6 path and it replaces forwarding entirely for
+        a tool declaring `"egress": true` — the MCP server does not see the
+        URL, does not see the credential, and does not produce the response.
+
+        The request runs in an executor because it blocks on a socket, and the
+        server->client pump has to keep flowing. Every audit write stays on the
+        event-loop thread: the SQLite connection belongs to the thread that
+        opened it, which S5 learned the hard way (S5-REPORT.md §C7).
+        """
+        params = message.get("params") or {}
+        arguments = params.get("arguments") or {}
+
+        outcome = await loop.run_in_executor(
+            None, fetch.perform,
+            decision.tool, arguments, self.policy, self.redactor,
+        )
+
+        if outcome.allowed:
+            self.stats["egress_performed"] += 1
+            self.stats["egress_bytes_out"] += outcome.req_bytes or 0
+            self.stats["egress_bytes_in"] += outcome.resp_bytes or 0
+            recorded = Decision(
+                Effect.ALLOW,
+                f"{outcome.reason}; {outcome.summary()}",
+                outcome.rule_id, decision.tool, decision.paths,
+            )
+        else:
+            self.stats["egress_denied"] += 1
+            recorded = Decision(
+                Effect.DENY, outcome.reason, outcome.rule_id,
+                decision.tool, decision.paths,
+            )
+
+        log("egress", tool=decision.tool, allowed=outcome.allowed,
+            host=outcome.host, status=outcome.status, rule=outcome.rule_id,
+            req_bytes=outcome.req_bytes, resp_bytes=outcome.resp_bytes,
+            hops=list(outcome.hops))
+
+        # Recorded before the response is handed back, exactly as every other
+        # decision is: a request whose row could not be written is a request
+        # nobody can reconstruct, so its result does not reach the model.
+        try:
+            row_id, row_hash = self.store.record(
+                tool=recorded.tool,
+                effect=recorded.effect.value,
+                rule_id=recorded.rule_id,
+                reason=recorded.reason,
+                paths=list(recorded.paths),
+                host=outcome.host,
+                status=outcome.status,
+                req_bytes=outcome.req_bytes,
+                resp_bytes=outcome.resp_bytes,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed, as everywhere else
+            self.stats["audit_failures"] += 1
+            log("audit_write_failed", error=f"{type(exc).__name__}: {exc}",
+                tool=decision.tool)
+            return denial_frame(message.get("id"), Decision(
+                Effect.DENY,
+                f"the request was performed but could not be recorded ({exc}); "
+                f"the response is withheld rather than delivered unrecorded",
+                "audit_fail_closed", decision.tool, decision.paths,
+            ))
+        log("audit_row", id=row_id, hash=row_hash[:16])
+
+        if not outcome.allowed:
+            self.stats["denied"] += 1
+            return {
+                "jsonrpc": "2.0",
+                "id": message.get("id"),
+                "result": {
+                    "content": [
+                        {"type": "text", "text": fetch.denial_text(decision.tool, outcome)}
+                    ],
+                    "isError": True,
+                },
+            }
+
+        self.stats["allowed"] += 1
+        return fetch.result_frame(message.get("id"), outcome)
 
     def audit(self, decision: Decision) -> Decision:
         """Record the decision, then return the decision that is actually
@@ -354,21 +434,24 @@ async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) ->
             if decision.is_allowed():
                 decision = proxy.stage_destructive(decision)
 
-            # C6: substitute only after ALLOW, and before the audit write, so
-            # the recorded decision is the one actually enforced rather than an
-            # ALLOW that a failed substitution later turned into a denial.
-            handles = ()
+            # S8 (C4/C6): an egress tool's request is made by Aegis, not by the
+            # server. The frame stops here — it is never forwarded — which is
+            # what keeps the URL and the credential away from a server that
+            # THREAT-MODEL.md §3 names as adversary T3. Denials on this path
+            # are recorded by perform_egress with the destination attached, so
+            # they do not fall through to the generic audit below.
+            if decision.is_allowed() and proxy.policy.tool_does_egress(decision.tool):
+                frame = await proxy.perform_egress(message, decision, loop)
+                async with out_lock:
+                    sys.stdout.write(json.dumps(frame) + "\n")
+                    sys.stdout.flush()
+                continue
+
+            # S8: a credential handle on a tool that cannot reach fetch.py is
+            # denied here. Nothing is substituted into a forwarded call any
+            # more — see Proxy.substitute.
             if decision.is_allowed():
-                message, decision, handles = proxy.substitute(message, decision)
-                if handles:
-                    decision = Decision(
-                        decision.effect,
-                        f"{decision.reason}; substituted credential handle(s) "
-                        + ", ".join(handles),
-                        decision.rule_id,
-                        decision.tool,
-                        decision.paths,
-                    )
+                message, decision, _ = proxy.substitute(message, decision)
 
             log(
                 "tool_call",
@@ -387,10 +470,6 @@ async def pump_client_to_server(proxy: Proxy, writer, out_lock: asyncio.Lock) ->
                 continue
             proxy.stats["allowed"] += 1
             proxy.inflight[message.get("id")] = decision.tool
-
-            if handles:
-                # Reserialize: `line` still holds the handle, not the secret.
-                line = (json.dumps(message) + "\n").encode("utf-8")
 
         writer.write(line)
         await writer.drain()

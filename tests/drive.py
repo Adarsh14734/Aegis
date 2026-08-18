@@ -124,10 +124,20 @@ CASES = [
     # Fake credentials only. AKIAIOSFODNN7EXAMPLE is AWS's own published
     # documentation key; the rest are well-formed but invented.
 
-    ("S3a T2 fetch an allowed domain",
+    # S8 changed what these two mean. Until S8 they were ALLOWED: the URL passed
+    # the allowlist and the call was forwarded for the MCP server to fetch. Now
+    # Aegis makes the request itself, so an allowed host must also resolve and
+    # answer. api.example.com and cdn.example.com are IANA documentation names
+    # with no A record, so both deny at resolution — the destination passed the
+    # allowlist and there was nothing there. That is the S8 behaviour working,
+    # not a regression, and it is why the expected counts below moved from
+    # 6/21 to 4/23. The positive path (an allowed host that really answers) is
+    # in tests/s8.py, which runs a real origin on 127.0.0.1 rather than
+    # depending on this machine's network.
+    ("S3a T2 fetch an allowed domain (S8: performed by Aegis; DNS decides)",
      "fetch", {"url": "https://api.example.com/v1/status"}),
 
-    ("S3a T2 fetch a subdomain of an allowed domain",
+    ("S3a T2 fetch a subdomain of an allowed domain (S8: same)",
      "fetch", {"url": "https://cdn.example.com/asset.js"}),
 
     ("S3a T2 exfil to an unlisted domain",
@@ -230,7 +240,10 @@ for i, (label, tool, args) in enumerate(CASES, start=1):
         print(f"  | {ln}")
 
 print("\n" + "=" * 78)
-print(f"RESULT: {allowed} allowed, {denied} denied  (expected: 6 allowed, 21 denied)")
+print(f"RESULT: {allowed} allowed, {denied} denied  (expected: 4 allowed, 23 denied)")
+print("note: the two allowed-domain fetch cases deny at resolution because "
+      "example.com has no such subdomains. S8 performs the request rather than "
+      "forwarding it, so reachability is now part of the outcome.")
 print(f"exfil file created? {Path('/tmp/aegis-exfil.txt').exists()}  (expected: False)")
 
 proc.stdin.close()

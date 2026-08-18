@@ -99,6 +99,7 @@ Out of scope (see §7), but stated so the boundary is explicit.
 - **B3.** The trusted computing base must stay small enough to audit by hand. Every feature added to the control plane widens it.
 - **B4.** Secrets never cross the boundary in plaintext. The broker performs the operation; the agent receives a result.
   *S4 note:* C6a keeps the value out of the **model's context** but hands it to the MCP server, which §3 names as T3. B4 as written is not met by substitution and needs Aegis to perform the request itself — that is C4. Until then, any credential granted to a tool is a credential granted to whoever wrote that tool.
+  *S8 note:* **B4 is now met for credentials Aegis can spend itself.** `aegis/fetch.py` performs the HTTP request and returns only the response, so the MCP server receives neither the URL nor the value, and a handle on a tool that cannot reach that path is denied rather than substituted. What B4 still does not cover is the far side: the credential necessarily reaches the host it was granted for, and Aegis cannot constrain what that host does with it.
 
 ---
 
@@ -109,12 +110,13 @@ Out of scope (see §7), but stated so the boundary is explicit.
 | C1 | Deterministic path allow/deny on every `tools/call` | T1, T2, T3 | S1 | UNVERIFIED |
 | C2 | Default-deny: unmatched action → ASK, never ALLOW | T1, T2 | S1 | UNVERIFIED |
 | C3 | Hash-chained append-only audit log + verifier CLI | A6, all | S2 | VERIFIED (harness, macOS) — S2-REPORT.md |
-| C4 | TLS-terminating egress proxy, domain allowlist | T2, T3, T4 | S3 | UNVERIFIED — not built |
-| C4a | MCP-layer destination allowlist + SSRF rejection (no TLS inspection) | T2, T3 | S3a | VERIFIED (harness, macOS) — S3a-REPORT.md |
+| C4 | **Aegis performs the request**: allowlist + SSRF checked at the resolved address + redirect re-checked per hop | T2, T3 | S8 | VERIFIED (harness, macOS) — **scope narrowed, read S8-REPORT.md §What C4 now covers before citing this** |
+| C4-gateway | Intercepting egress Aegis does not itself make (server-initiated requests, Bash, `npm install`) | T3, T4 | — | **UNVERIFIED — not built.** This is the half of the original C4 that S8 does not touch |
+| C4a | MCP-layer destination allowlist + SSRF rejection, URL read from an argument and forwarded | T2, T3 | S3a | superseded by C4 in S8; the forwarding path no longer exists |
 | C5 | DLP scan of outbound request bodies (key/PII patterns) | A1, A2 | S3 | UNVERIFIED — no request bodies at the MCP layer |
 | C5a | Secret scan of tool arguments, pattern name recorded but never the value | A1, A2 | S3a | VERIFIED (harness, macOS) — S3a-REPORT.md |
-| C6 | Credential broker — secret never enters agent context (B4: broker performs the operation) | A1, T2, T3 | S4 | UNVERIFIED — not built |
-| C6a | Handle substitution after policy: model never sees the value; MCP server does | A1, T2 | S4 | VERIFIED (harness, macOS) against a **fake** keychain; OS keychain write path UNVERIFIED — S4-REPORT.md |
+| C6 | Credential broker — B4: the broker performs the operation, the agent receives a result. The MCP server never sees the value | A1, T2, T3 | S8 | VERIFIED (harness, macOS) — S8-REPORT.md. OS keychain **write** path still VERIFIED (manual) only, S4-REPORT.md §7c |
+| C6a | Handle substitution into forwarded arguments: model never sees the value; MCP server does | A1, T2 | S4 | **removed in S8.** The path is deleted, not deprecated; a handle on a tool that cannot reach fetch.py is denied |
 | C7 | Blocking human approval, timeout-to-deny | A4, A5 | S5 | VERIFIED (harness, macOS); live-terminal path VERIFIED (manual, macOS) 2026-08-16 — S5-REPORT.md |
 | C8 | Bulk-operation threshold (N files → forced approval) | T1 | S5 | VERIFIED (harness, macOS) — S5-REPORT.md |
 | C9 | Soft delete to recoverable trash | T1 | S5 | VERIFIED (harness, macOS); no delete tool exists on the real FS server — S5-REPORT.md |
@@ -135,6 +137,7 @@ Anthropic open-sourced its sandboxing implementation (Seatbelt/bubblewrap). Reim
 **D3 — Hostname-based egress filtering is insufficient.**
 Filtering on the client-supplied hostname without inspecting TLS can be defeated by domain fronting. C4 therefore requires terminating TLS with a local CA installed inside the sandbox. This is the hardest engineering in the v0 and should be assumed to take longer than estimated.
 *S3a note:* C4a checks a hostname read out of a tool argument. By this decision it is a partial control and can never be described as C4, however well it tests.
+*S8 note:* domain fronting is **not applicable** to a request Aegis composes itself — Aegis chooses the SNI, chooses the Host header, and validates the certificate against the name it chose, so there is no client-supplied hostname to disbelieve. That makes D3 moot for this path rather than solved, and it says nothing about traffic Aegis does not originate. TLS interception is still the only answer for that, and it is still not built (C4-gateway).
 
 **D4 — Approval budget is a security property.**
 Target: fewer than 5 approval prompts per hour of agent work. Above that, T5 (approval fatigue) defeats C7. If a sprint increases prompt frequency, that is a regression.

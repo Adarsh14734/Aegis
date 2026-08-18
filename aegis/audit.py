@@ -19,6 +19,31 @@ would add ceremony without adding a guarantee. Detection is the guarantee.
 Fail-closed (S0 decision #3): every failure path here raises AuditError. The
 caller must treat an unwritable audit log as a denied call. An action nobody
 can reconstruct afterwards is worse than an action that did not happen.
+
+THE PAYLOAD VERSION (S8)
+
+S8 needed four more fields in the row — the destination host, the HTTP status,
+and the byte counts of a request Aegis performed itself. Adding a field to the
+hashed payload changes every hash, which would have silently invalidated every
+audit database in existence. That is the same observable event as an attack on
+the log, so it is not an acceptable upgrade.
+
+Instead the payload is versioned, and the version is stored per row:
+
+    v NULL or 1  ->  sha256(canonical_json({id,ts,tool,effect,rule_id,reason,
+                                            paths}) + prev_hash)
+    v = 2        ->  sha256(canonical_json({v,id,ts,tool,effect,rule_id,reason,
+                                            paths,host,status,req_bytes,
+                                            resp_bytes}) + prev_hash)
+
+Old rows keep hashing under the rule they were written with, forever. New rows
+use v2. A database may hold both, and the chain still links across the boundary
+because `prev_hash` is version-independent — it is just the previous row's
+stored hash, whatever rule produced it.
+
+`v` is NULL rather than 1 on old rows because that is what ADD COLUMN leaves
+behind, and back-filling it would mean rewriting rows: the one thing this
+module must never do.
 """
 
 import hashlib
@@ -42,21 +67,46 @@ OPEN_BUSY_TIMEOUT = 10.0
 # S3b fix 3: the head anchor written next to the database on clean shutdown.
 HEAD_FILE_NAME = "aegis-head.txt"
 
+# S8: the payload version this build writes. Every row records the rule its
+# hash was computed under, so a schema change can never invalidate a chain
+# written before it. See §The payload version below.
+PAYLOAD_VERSION = 2
+
 # Kept verbatim in aegis/verify.py's docstring-level expectations. If this
 # changes, the verifier must change with it, and old databases stop verifying.
+#
+# S8 adds five columns. They are added by ALTER TABLE on an existing database,
+# which does not rewrite a single stored byte of an existing row — old rows
+# simply read NULL for all five, and NULL in `v` is what marks them as hashing
+# under the v1 rule.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts        REAL    NOT NULL,
-    tool      TEXT    NOT NULL,
-    effect    TEXT    NOT NULL,
-    rule_id   TEXT    NOT NULL,
-    reason    TEXT    NOT NULL,
-    paths     TEXT    NOT NULL,
-    prev_hash TEXT    NOT NULL,
-    row_hash  TEXT    NOT NULL
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         REAL    NOT NULL,
+    tool       TEXT    NOT NULL,
+    effect     TEXT    NOT NULL,
+    rule_id    TEXT    NOT NULL,
+    reason     TEXT    NOT NULL,
+    paths      TEXT    NOT NULL,
+    prev_hash  TEXT    NOT NULL,
+    row_hash   TEXT    NOT NULL,
+    v          INTEGER,
+    host       TEXT,
+    status     INTEGER,
+    req_bytes  INTEGER,
+    resp_bytes INTEGER
 )
 """
+
+# The five S8 columns, in the order the v2 payload names them. Existing
+# databases are brought up to this shape by ADD COLUMN, never by a rebuild.
+S8_COLUMNS = (
+    ("v", "INTEGER"),
+    ("host", "TEXT"),
+    ("status", "INTEGER"),
+    ("req_bytes", "INTEGER"),
+    ("resp_bytes", "INTEGER"),
+)
 
 
 class AuditError(Exception):
@@ -91,9 +141,15 @@ def compute_row_hash(
     paths: str,
     prev_hash: str,
 ) -> str:
-    """The chain link. `paths` is the stored TEXT column, not the original
-    list — the verifier only ever sees columns, so the hash must be a function
-    of columns."""
+    """The v1 chain link — every row written before S8.
+
+    Kept byte-identical and permanently. This is not dead code and must never
+    be "tidied up" into the v2 function: every audit database in existence
+    before S8 has rows whose stored hash is this function's output, and the
+    moment this changes those chains stop verifying. `paths` is the stored TEXT
+    column, not the original list — the verifier only ever sees columns, so the
+    hash must be a function of columns.
+    """
     payload = canonical_json(
         {
             "id": row_id,
@@ -103,6 +159,53 @@ def compute_row_hash(
             "rule_id": rule_id,
             "reason": reason,
             "paths": paths,
+        }
+    )
+    return hashlib.sha256((payload + prev_hash).encode("utf-8")).hexdigest()
+
+
+def compute_row_hash_v2(
+    row_id: int,
+    ts: float,
+    tool: str,
+    effect: str,
+    rule_id: str,
+    reason: str,
+    paths: str,
+    host,
+    status,
+    req_bytes,
+    resp_bytes,
+    prev_hash: str,
+) -> str:
+    """The v2 chain link — every row written by S8 onward.
+
+    Two things make this safe to introduce next to v1:
+
+      - **The version is inside the payload.** A row cannot be reinterpreted
+        under the other rule without changing its hash, so "which rule applies"
+        is not a decision an attacker can flip for free. They would have to
+        recompute the hash, which breaks the chain forward exactly as any other
+        edit does.
+      - **The four new fields are always present**, carrying JSON null when the
+        decision was not an outbound request. A field that appears only
+        sometimes would make two different payloads for the same row shape, and
+        the verifier would have to guess which one was used.
+    """
+    payload = canonical_json(
+        {
+            "v": 2,
+            "id": row_id,
+            "ts": ts,
+            "tool": tool,
+            "effect": effect,
+            "rule_id": rule_id,
+            "reason": reason,
+            "paths": paths,
+            "host": host,
+            "status": status,
+            "req_bytes": req_bytes,
+            "resp_bytes": resp_bytes,
         }
     )
     return hashlib.sha256((payload + prev_hash).encode("utf-8")).hexdigest()
@@ -176,6 +279,7 @@ class AuditStore:
             # that is the wrong trade.
             conn.execute("PRAGMA synchronous=FULL")
             conn.execute(SCHEMA)
+            cls._migrate(conn)
         except BaseException:
             conn.close()  # do not leak the handle into the retry loop
             raise
@@ -185,6 +289,26 @@ class AuditStore:
         if created:
             store._log_created()
         return store
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Bring a pre-S8 database up to the current column set.
+
+        `ALTER TABLE ... ADD COLUMN` is the only statement used, and it is the
+        only one that could be: it appends a column to the table definition
+        without touching a single stored row. Every existing row keeps its
+        bytes, keeps its `row_hash`, and reads NULL in the new columns — which
+        is exactly what marks it as a v1 row to the verifier.
+
+        Anything that rewrote rows here would be indistinguishable from an
+        attack on the log, and would break every anchor ever recorded. There is
+        no code path in Aegis that rewrites an audit row, and this must not
+        become the first one.
+        """
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
+        for name, kind in S8_COLUMNS:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE audit ADD COLUMN {name} {kind}")
 
     @staticmethod
     def _create_file_if_missing(path: Path) -> bool:
@@ -310,13 +434,30 @@ class AuditStore:
         reason: str,
         paths,
         ts: float | None = None,
+        host: str | None = None,
+        status: int | None = None,
+        req_bytes: int | None = None,
+        resp_bytes: int | None = None,
     ) -> tuple[int, str]:
         """Append one decision. Returns (row id, row_hash).
+
+        S8: `host`, `status`, `req_bytes` and `resp_bytes` describe an outbound
+        request Aegis performed itself (aegis/fetch.py). They are None for
+        every other decision, which is most of them — a file read has no
+        destination and no status. `host` is the host actually connected to
+        after any redirects, not the one the model asked for.
+
+        Every row written here is v2. A v1 row is, by definition, a row written
+        before S8 existed.
 
         Raises AuditError on any failure — the caller denies the call.
         """
         ts = round(time.time() if ts is None else ts, 6)
         paths_text = canonical_json([str(p) for p in (paths or ())])
+        host = str(host) if host is not None else None
+        status = int(status) if status is not None else None
+        req_bytes = int(req_bytes) if req_bytes is not None else None
+        resp_bytes = int(resp_bytes) if resp_bytes is not None else None
         try:
             # IMMEDIATE takes the write lock before we read the head, so two
             # proxies sharing one db cannot compute the same next id or chain
@@ -325,16 +466,18 @@ class AuditStore:
             try:
                 prev_id, prev_hash = self.head()
                 row_id = prev_id + 1
-                digest = compute_row_hash(
+                digest = compute_row_hash_v2(
                     row_id, ts, str(tool), str(effect), str(rule_id), str(reason),
-                    paths_text, prev_hash,
+                    paths_text, host, status, req_bytes, resp_bytes, prev_hash,
                 )
                 self.conn.execute(
                     "INSERT INTO audit "
-                    "(id, ts, tool, effect, rule_id, reason, paths, prev_hash, row_hash) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(id, ts, tool, effect, rule_id, reason, paths, prev_hash, "
+                    " row_hash, v, host, status, req_bytes, resp_bytes) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (row_id, ts, str(tool), str(effect), str(rule_id), str(reason),
-                     paths_text, prev_hash, digest),
+                     paths_text, prev_hash, digest, PAYLOAD_VERSION,
+                     host, status, req_bytes, resp_bytes),
                 )
                 self.conn.execute("COMMIT")
             except BaseException:

@@ -20,6 +20,21 @@ Copy this file to another machine and it still works with the rest of Aegis
 absent. Keeping the two copies in agreement is a maintenance cost that is
 being paid on purpose.
 
+TWO PAYLOAD RULES (S8)
+  S8 added host/status/byte columns to the row, which changes what is hashed.
+  Rather than invalidate every database written before it — an event
+  indistinguishable from an attack — the payload is versioned per row and both
+  rules live here, each an independent copy of audit.py's:
+
+    v NULL or 1   the seven original fields          (every pre-S8 row)
+    v = 2         those plus v, host, status, req_bytes, resp_bytes
+
+  The version comes from the row's own `v` column and is itself hashed under
+  v2, so a row cannot be moved between rules without invalidating itself. A
+  database with no `v` column at all — written before S8 and never opened
+  since — is read with the old query and verifies exactly as it always did. A
+  version this file does not implement is a failure, not a pass.
+
 WHAT A PASS DOES AND DOES NOT MEAN
   Detected: any edited field, any deleted row (ids go non-contiguous), any
   reordering, any inserted row, any re-hashed row whose successors were not
@@ -53,6 +68,17 @@ from pathlib import Path
 
 GENESIS_PREV_HASH = "0" * 64
 FIELDS = ("id", "ts", "tool", "effect", "rule_id", "reason", "paths")
+
+# S8 added four columns to the row and therefore a second hash rule. Both are
+# implemented below, independently of audit.py as always. Which one applies to
+# a row is read from that row's own `v` column, not guessed from whether the
+# new columns happen to be NULL — a v2 row for a file read has NULL in all four
+# and must still verify under v2.
+V2_FIELDS = (
+    "v", "id", "ts", "tool", "effect", "rule_id", "reason", "paths",
+    "host", "status", "req_bytes", "resp_bytes",
+)
+KNOWN_VERSIONS = (None, 1, 2)
 
 # Deliberately a second copy of the name audit.py uses. This file imports
 # nothing from Aegis (S0 #4) and that rule is worth more than the duplication.
@@ -116,10 +142,38 @@ def default_db_path() -> Path:
 
 
 def row_hash(values: dict, prev_hash: str) -> str:
+    """The v1 rule. Every row written before S8 hashes under this and always
+    will. Deliberately a second, independent copy of audit.py's — see the
+    module docstring."""
     payload = json.dumps(
         {k: values[k] for k in FIELDS}, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256((payload + prev_hash).encode("utf-8")).hexdigest()
+
+
+def row_hash_v2(values: dict, prev_hash: str) -> str:
+    """The v2 rule, S8 onward. Also an independent second copy.
+
+    The version is part of what is hashed, so a row cannot be moved between
+    rules without invalidating itself. `host` is TEXT and the other three are
+    INTEGER; SQLite hands back None for NULL, which json renders as null — the
+    same shape audit.py fed in.
+    """
+    payload = json.dumps(
+        {k: values[k] for k in V2_FIELDS}, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256((payload + prev_hash).encode("utf-8")).hexdigest()
+
+
+def has_s8_columns(conn: sqlite3.Connection) -> bool:
+    """Whether this database has ever been opened by S8 or later.
+
+    A database written before S8 and never opened since has no `v` column at
+    all, and asking for one is an OperationalError rather than a NULL. Such a
+    database is entirely valid and must verify unchanged — so the column list
+    is read first and the query built to match.
+    """
+    return "v" in {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -184,10 +238,18 @@ def verify(path: Path, expect_head: str | None = None, quiet: bool = False,
         ).fetchone():
             print(f"FAIL: {path} has no 'audit' table — not an Aegis audit log", file=sys.stderr)
             return 2
-        cur = conn.execute(
-            "SELECT id, ts, tool, effect, rule_id, reason, paths, prev_hash, row_hash "
-            "FROM audit ORDER BY id ASC"
-        )
+        versioned = has_s8_columns(conn)
+        if versioned:
+            cur = conn.execute(
+                "SELECT id, ts, tool, effect, rule_id, reason, paths, prev_hash, "
+                "row_hash, v, host, status, req_bytes, resp_bytes "
+                "FROM audit ORDER BY id ASC"
+            )
+        else:
+            cur = conn.execute(
+                "SELECT id, ts, tool, effect, rule_id, reason, paths, prev_hash, row_hash "
+                "FROM audit ORDER BY id ASC"
+            )
     except sqlite3.Error as exc:
         print(f"FAIL: cannot read {path}: {exc}", file=sys.stderr)
         return 2
@@ -197,10 +259,30 @@ def verify(path: Path, expect_head: str | None = None, quiet: bool = False,
     count = 0
     hash_at_anchor_id = None
 
+    counted = {1: 0, 2: 0}
+
     for raw in cur:
         values = dict(zip(FIELDS, raw[:7]))
         stored_prev, stored_hash = raw[7], raw[8]
         row_id = values["id"]
+        version = raw[9] if versioned else None
+        if versioned:
+            values.update(
+                {"v": raw[9], "host": raw[10], "status": raw[11],
+                 "req_bytes": raw[12], "resp_bytes": raw[13]}
+            )
+
+        # An unknown version is a failure, never a pass. A row claiming a rule
+        # this verifier does not implement cannot be checked, and "could not
+        # check it" must not read the same as "checked it and it was fine".
+        if version not in KNOWN_VERSIONS:
+            return _broken(
+                row_id,
+                f"row declares payload version {version!r}, which this verifier "
+                f"does not implement. It cannot be checked, so it is not "
+                f"accepted. Use a verifier from the build that wrote it.",
+                count,
+            )
 
         # A deleted row leaves a hole in the sequence. AUTOINCREMENT never
         # reuses ids, so a hole is always evidence, never normal operation.
@@ -220,16 +302,20 @@ def verify(path: Path, expect_head: str | None = None, quiet: bool = False,
                 count,
             )
 
-        recomputed = row_hash(values, prev_hash)
+        applied = 2 if version == 2 else 1
+        recomputed = row_hash_v2(values, prev_hash) if applied == 2 else row_hash(values, prev_hash)
         if recomputed != stored_hash:
             return _broken(
                 row_id,
                 f"row_hash mismatch — row contents were altered\n"
                 f"  stored:     {stored_hash}\n  recomputed: {recomputed}\n"
-                f"  row: tool={values['tool']!r} effect={values['effect']!r} "
+                f"  payload rule applied: v{applied}"
+                + ("  (v NULL, so this row predates S8)" if version is None else "")
+                + f"\n  row: tool={values['tool']!r} effect={values['effect']!r} "
                 f"rule_id={values['rule_id']!r}",
                 count,
             )
+        counted[applied] += 1
 
         if anchor_id is not None and row_id == anchor_id:
             hash_at_anchor_id = stored_hash
@@ -274,6 +360,12 @@ def verify(path: Path, expect_head: str | None = None, quiet: bool = False,
 
     if not quiet:
         print(f"OK: {count} row(s) verified, chain intact")
+        if counted[1] and counted[2]:
+            print(
+                f"rules:  {counted[1]} row(s) under the v1 payload (written "
+                f"before S8), {counted[2]} under v2. A mixed chain is normal "
+                f"after an upgrade and is not evidence of anything."
+            )
         print(f"db:     {path}")
         print(f"head:   {prev_hash}")
         print(f"anchor: {anchor_source}")

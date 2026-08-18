@@ -1,0 +1,39 @@
+Aegis S8 — the production network path, 2026-08-18 11:33:18 IST
+macOS 26.5.1 / Python 3.14.3
+
+tests/s8.py drives DNS through an injected resolver so a name can be
+pointed at a chosen address. This run uses NOTHING injected: real
+socket.getaddrinfo, real TLS, a real host on the public internet.
+
+$ resolve once, check every address, dial one of them
+  resolved: ['2606:4700:83b5:72db:f2ca:598:ef6b:ff98', '104.20.23.154', '172.66.147.243']
+  dialling: 2606:4700:83b5:72db:f2ca:598:ef6b:ff98  port: 443  https: True
+  Host header and SNI and cert validation all use: example.com
+
+$ GET https://example.com/
+  allowed: True  rule: tool_rules.fetch
+  host: example.com  status: 200
+  req_bytes: 68  resp_bytes: 874
+  hops: ('example.com',)
+  body[:60]: '<!doctype html><html lang="en"><head><title>Example Domain</'
+
+$ GET https://www.iana.org/   (not on the allowlist)
+  allowed: False  rule: egress_domain
+  reason: destination refused: https://www.iana.org: host is not in allowed_domains
+
+$ TLS is validated against the NAME, not the address that was dialled
+  (driven through fetch.send_once, i.e. the code path in use, not a
+   hand-rolled ssl call. The first attempt presents a name no
+   certificate can carry; the second presents the one that address serves.)
+
+  $ dial 104.20.23.154 presenting a name its certificate cannot cover
+    refused by certificate validation: SSLError: [SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1081)
+
+  $ the same address, presenting the name it does serve
+    accepted, status 200 req 68 resp 873
+
+  An earlier version of this probe used 'wrong-name.example.net' and was
+  ACCEPTED — that address legitimately serves a certificate with a
+  *.example.net SAN, so the probe was wrong, not the control. Recorded
+  here rather than quietly replaced: a probe that proves nothing is
+  worth more visible than deleted.

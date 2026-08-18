@@ -1,0 +1,37 @@
+Aegis S8 — the schema change did not invalidate any existing chain
+2026-08-18 11:37:27 IST, macOS 26.5.1, Python 3.14.3
+
+The subject is a copy of the REAL audit database from this machine —
+85 rows written by S1 through S7, none of which has ever seen S8 code.
+Per the S2 operating rule, the experiment runs on a copy.
+
+$ sqlite3 compat.db 'PRAGMA table_info(audit)'  # before
+id ts tool effect rule_id reason paths prev_hash row_hash 
+$ sha256 of the file before S8 touches it
+bea17677cb04281cb0c7abccee5088d1c047ef0e98c1e5c79d98e5482be11027
+
+$ python3 -m aegis.verify compat.db   # new verifier, un-migrated database
+OK: 85 row(s) verified, chain intact
+db:     /private/tmp/claude-501/-Users-adarsh-code-aegis/5dbc0738-19d7-4ab8-ad3e-cebc0ea920a8/scratchpad/compat.db
+head:   e132faa7de6d37ecbee0df2caf4d21aacb7206312af38f15b3ea8d0013cea0da
+anchor: none
+note: nothing anchored this head, so truncation of the newest rows would not be visible. Record the hash above and re-check with --expect-head.
+exit 0
+
+$ open it with the S8 store (this migrates it), then close
+$ sqlite3 compat.db 'PRAGMA table_info(audit)'  # after
+id ts tool effect rule_id reason paths prev_hash row_hash v host status req_bytes resp_bytes 
+
+$ every pre-S8 row still reads v NULL and no new column was back-filled
+85 rows, 85 with v NULL, 85 with host NULL
+
+$ python3 -m aegis.verify compat.db   # after migration
+OK: 85 row(s) verified, chain intact
+db:     /private/tmp/claude-501/-Users-adarsh-code-aegis/5dbc0738-19d7-4ab8-ad3e-cebc0ea920a8/scratchpad/compat.db
+head:   e132faa7de6d37ecbee0df2caf4d21aacb7206312af38f15b3ea8d0013cea0da
+anchor: none
+note: nothing anchored this head, so truncation of the newest rows would not be visible. Record the hash above and re-check with --expect-head.
+exit 0
+
+The head hash is the same on both sides of the migration. ADD COLUMN
+appends to the table definition and rewrites no stored row, which is why.

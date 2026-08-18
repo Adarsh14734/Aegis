@@ -287,14 +287,37 @@ con = sqlite3.connect(str(w))
 con.execute("UPDATE audit SET effect='deny', reason='tampered' WHERE id=1")
 import hashlib  # noqa: E402 - attacker simulation, kept local
 
-prev = "0" * 64
-for row in con.execute("SELECT id, ts, tool, effect, rule_id, reason, paths "
-                       "FROM audit ORDER BY id").fetchall():
-    vals = dict(zip(("id", "ts", "tool", "effect", "rule_id", "reason", "paths"), row))
-    h = hashlib.sha256((json.dumps(vals, sort_keys=True, separators=(",", ":"))
-                        + prev).encode()).hexdigest()
-    con.execute("UPDATE audit SET prev_hash=?, row_hash=? WHERE id=?", (prev, h, row[0]))
-    prev = h
+def rewrite_chain(con, hashlib, json):
+    """Recompute every row_hash, the way an attacker with write access would.
+
+    S8: rows carry a payload version, so a forger has to use the rule each row
+    declares. Updating this simulation is not a fix — it is what keeps the
+    demonstration honest. If it kept computing the v1 rule, the verifier would
+    catch the forgery for the wrong reason (a stale attacker) and the report
+    would claim a defence that does not exist. THREAT-MODEL.md §7.2 still
+    stands: nothing local stops this.
+    """
+    has_v = "v" in {r[1] for r in con.execute("PRAGMA table_info(audit)")}
+    cols = ("id", "ts", "tool", "effect", "rule_id", "reason", "paths")
+    extra = ("v", "host", "status", "req_bytes", "resp_bytes")
+    select = ", ".join(cols + (extra if has_v else ()))
+    prev = "0" * 64
+    for row in con.execute(f"SELECT {select} FROM audit ORDER BY id").fetchall():
+        vals = dict(zip(cols + (extra if has_v else ()), row))
+        if has_v and vals.get("v") == 2:
+            payload = {k: vals[k] for k in ("v",) + cols + extra[1:]}
+        else:
+            payload = {k: vals[k] for k in cols}
+        h = hashlib.sha256(
+            (json.dumps(payload, sort_keys=True, separators=(",", ":")) + prev).encode()
+        ).hexdigest()
+        con.execute("UPDATE audit SET prev_hash=?, row_hash=? WHERE id=?",
+                    (prev, h, vals["id"]))
+        prev = h
+    return prev
+
+
+rewrite_chain(con, hashlib, json)
 con.commit()
 con.close()
 r = subprocess.run([sys.executable, str(VERIFY), str(w)], capture_output=True, text=True)

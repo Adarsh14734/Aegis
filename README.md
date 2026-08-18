@@ -115,7 +115,8 @@ Outside that pipe it sees nothing:
   touches this proxy.
 - **Native agent file tools** (Read/Write/Edit in Claude Code) — same absence.
 - **MCP servers not routed through the proxy**, and anything a downstream server
-  does on its own.
+  does on its own. Aegis performs the requests for tools you mark `"egress"`,
+  and controls those; it does not intercept requests it did not make.
 - **Malware already on the machine, and anyone with root.** Both can edit the
   policy, the audit database and the head anchor.
 - **Prompt injection as a phenomenon.** Aegis assumes injection succeeds and
@@ -131,4 +132,4 @@ reports: [S1](S1-REPORT.md) proxy · [S2](S2-REPORT.md) audit chain ·
 [S3a](S3a-REPORT.md) / [S3b](S3b-REPORT.md) egress and DLP ·
 [S4](S4-REPORT.md) credentials · [S5](S5-REPORT.md) approval, trash, kill
 switch · [S6](S6-REPORT.md) desktop viewer · [S7](S7-REPORT.md) packaging and
-onboarding.
+onboarding · [S8](S8-REPORT.md) Aegis makes the request.

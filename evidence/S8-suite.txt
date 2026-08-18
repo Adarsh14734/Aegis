@@ -1,0 +1,182 @@
+Aegis S8 suite — 2026-08-18 11:32:36 IST, macOS 26.5.1, Python 3.14.3
+$ python3 tests/s8.py
+
+lab: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s8-r_d10sqw
+origin: 127.0.0.1:49574 as target.test
+
+==============================================================================
+1. THE ADDRESS CHECKED IS THE ADDRESS DIALLED
+==============================================================================
+  pass  an allowed request is performed
+  pass  ...and the body comes back
+  pass  ...to the host that was asked for
+  pass  ...and the origin really received it
+  pass  the Host header carries the original name, not the dialled address
+  pass  status is recorded
+  pass  request bytes are recorded and non-zero
+  pass  response bytes are recorded and non-zero
+  pass  response bytes exceed the body length (status line and headers counted)
+  pass  a POST with a body is performed
+  pass  ...the body arrived intact
+  pass  ...and the header arrived
+  pass  request bytes grow with the body
+
+==============================================================================
+2. SSRF VIA DNS — a name that resolves to a private address
+==============================================================================
+  pass  a name resolving to a private address is denied
+  pass  ...with rule_id egress_domain
+  pass  ...naming the address and the category
+  pass  ...and nothing was sent
+  pass  the same host passes the S3a lexical check, which is the point
+  pass  a name resolving to one public AND one private address is denied
+  pass  ...naming the private one
+  pass  a loopback IP literal is dialled only because it is explicitly listed
+  pass  the cloud metadata address is refused
+  pass  IPv6 loopback is refused
+  pass  the integer spelling of 127.0.0.1 is refused
+
+==============================================================================
+3. REDIRECTS — every hop is a new decision
+==============================================================================
+  pass  a short redirect chain is followed
+  pass  ...to the end of the chain
+  pass  ...and every hop is recorded
+  pass  a redirect to a host outside allowed_domains is denied
+  pass  ...as a redirect, not as the original destination
+  pass  ...naming the hop it was refused at
+  pass  ...and saying which host
+  pass  ...and it is a denial, not a silent stop at the 302
+  pass  ...the first hop did happen and is recorded
+  pass  a redirect to a name resolving privately is denied at the hop
+  pass  ...naming the resolved address
+  pass  a chain longer than 5 hops is denied
+  pass  ...with rule_id egress_redirect_limit
+  pass  ...naming the limit
+  pass  ...after following exactly the limit
+
+==============================================================================
+4. THE CREDENTIAL IS ATTACHED BY AEGIS, TO THE WIRE, AND NOWHERE ELSE
+==============================================================================
+  pass  a credentialed request is performed
+  pass  the origin received the real secret in the Authorization header
+  pass  ...and not the literal handle
+  pass  the response the model sees has the value redacted
+  pass  ...and says which handle was removed
+  pass  the audit-bound reason carries no value
+  pass  the recorded host is the destination
+  pass  a credential is not carried across a redirect to a host it was not granted for
+  pass  ...with rule_id credential_redirect
+  pass  ...explaining that the redirect is why
+  pass  the secret never reached elsewhere.test
+  pass  a handle granted for both hosts does follow the redirect
+  pass  ...and ends at the second host
+
+==============================================================================
+5. THE MCP SERVER IS NOT INVOLVED — byte level, through the real proxy
+==============================================================================
+  pass  the proxy ran
+  pass  the MCP server never saw the credential
+  pass  the MCP server never saw the handle either
+  pass  the MCP server never saw the URL of an egress call
+  pass  the MCP server did see the non-egress call, so it was really listening
+  pass  no fetch call was forwarded at all
+  pass  the secret is absent from the client stream
+  pass  the secret is absent from proxy stderr
+  pass  the secret is absent from the audit db audit-proxy.db
+
+  audit rows:
+    1  fetch      allow  tool_rules.fetch       host=127.0.0.1 status=200 req=137 resp=308 v=2
+    2  fetch      allow  tool_rules.fetch       host=127.0.0.1 status=200 req=70 resp=153 v=2
+    3  read_file  allow  tool_rules.read_file   host=None status=None req=None resp=None v=2
+  pass  both egress calls are recorded
+  pass  ...with the destination host
+  pass  ...with the HTTP status
+  pass  ...with request bytes
+  pass  ...with response bytes
+  pass  ...and payload version 2
+  pass  a non-egress row has no host/status/bytes
+  pass  ...and is still v2
+  pass  the chain verifies with the new columns in it
+
+==============================================================================
+6. NO FALLBACK TO THE S4 SUBSTITUTION PATH
+==============================================================================
+  pass  an egress call with no url is denied
+  pass  ...with rule_id egress_not_performable
+  pass  ...and the denial explains the contract
+  pass  headers as a list (the S4 shape) is denied, not substituted
+  pass  a credential handle on a non-egress tool is denied
+  pass  ...and the secret is nowhere in the exchange
+  pass  ...and the file was never written
+  pass  ...recorded as credential_denied or credential_requires_egress
+
+==============================================================================
+7. THE SCHEMA CHANGE DID NOT INVALIDATE ANY EXISTING CHAIN
+==============================================================================
+  pass  a pre-S8 database verifies under the S8 verifier
+  pass  ...reporting its 6 rows
+  pass  ...with the head hash it always had
+  pass  ...and the verifier did not modify it
+  pass  S8 reads the pre-S8 head correctly
+  pass  the mixed chain verifies
+  pass  ...counting 8 rows
+  pass  ...and saying which rule each half used
+  pass  the pre-S8 rows still read v NULL
+  pass  ...and were not back-filled with anything
+  pass  the appended rows are v2
+  pass  every pre-S8 row_hash survived the migration byte for byte
+  pass  editing an old field on a v1 row is detected
+  pass  ...and named at row 2
+  pass  editing an old field on a v2 row is detected
+  pass  ...and named at row 8
+  pass  editing the host on a v2 row is detected
+  pass  ...and named at row 7
+  pass  editing the status on a v2 row is detected
+  pass  ...and named at row 7
+  pass  editing the byte count on a v2 row is detected
+  pass  ...and named at row 7
+  pass  editing downgrading a v2 row to v1 is detected
+  pass  ...and named at row 7
+  pass  a row declaring an unknown payload version fails
+  pass  ...saying it could not be checked rather than passing it
+  pass  the archived broken database S2-tampered-audit.db still fails, as it must
+
+==============================================================================
+8. RESPONSE CAP
+==============================================================================
+  pass  a large response is fetched
+  pass  ...and its real byte count is recorded
+  pass  ...under the cap, so it is not truncated here
+
+==============================================================================
+SUMMARY
+==============================================================================
+  pass  the operator's real Aegis state is untouched
+
+  109 passed, 0 failed
+
+  lab: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s8-r_d10sqw   (delete when done)
+
+  NOT established by this run:
+    - anything about traffic Aegis does not itself make. A server that
+      fetches on its own, and Bash, are exactly as far outside the
+      boundary as they were in S1 (THREAT-MODEL.md §7.6)
+    - domain fronting, which is why D3 specified C4 as TLS-terminating
+    - real DNS. Resolution is driven by an injected resolver here; the
+      production path calls socket.getaddrinfo and is checked by hand
+
+
+=== regression, same working tree ===
+tests/tamper.py  exit 0   all cases behaved as specified
+tests/s3a.py     exit 0   99 passed, 0 failed
+tests/s3b.py     exit 0   60 passed, 0 failed
+tests/s4.py      exit 1   67 passed, 0 failed, 2 NOT RUN
+tests/s5.py      exit 1   80 passed, 0 failed, 1 NOT RUN
+tests/s7.py      exit 0   138 passed, 0 failed
+
+=== tests/drive.py, sandboxed policy+db (S8 changes two outcomes; see the file) ===
+==============================================================================
+RESULT: 4 allowed, 23 denied  (expected: 4 allowed, 23 denied)
+note: the two allowed-domain fetch cases deny at resolution because example.com has no such subdomains. S8 performs the request rather than forwarding it, so reachability is now part of the outcome.
+exfil file created? False  (expected: False)
