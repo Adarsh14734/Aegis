@@ -530,8 +530,14 @@ after = row_count(AUDIT_DB)
 check("the audit log actually gained exactly one row", after == before + 1,
       f"{before} -> {after}")
 check("doctor prints what it does not cover", "WHAT THIS DOES NOT COVER" in out)
-check("...and names Bash explicitly", "Bash, and every shell command" in out)
-check("...and names native agent file tools", "Native file tools" in out)
+# S9b reworded this block: Bash and the native tools are no longer simply
+# uncovered — `aegis run` covers them — so the assertion tracks that both are
+# still named, and that the caveat naming the sandbox is present too.
+check("...and names Bash explicitly", "Bash, every shell command" in out, out[-1500:])
+check("...and names native agent file tools",
+      "native file tools" in out.lower(), out[-1500:])
+check("...and says the sandbox is what covers them",
+      "aegis run" in out, out[-1500:])
 check("...and points at the full threat model", "THREAT-MODEL.md §7" in out)
 
 

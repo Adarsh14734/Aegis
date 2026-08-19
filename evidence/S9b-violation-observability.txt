@@ -1,0 +1,54 @@
+Aegis S9b — what the kernel layer can and cannot be observed to do
+2026-08-19 16:15:05 IST, macOS 26.5.1
+
+S9 gap 7: C11 enforced without observing. Before writing anything, the
+question was what is actually observable. Measured, not assumed.
+
+=== 1. ASRT's violation API is NOT reachable from the CLI Aegis wraps ===
+$ grep -c -i violation dist/cli.js
+0
+^ zero. The store (getViolationsForCommand, SandboxViolationStore) exists
+  only in the Node library. Aegis wraps the srt binary, not the library.
+
+$ what ASRT's own macOS violation store spawns:
+    const logProcess = spawn('log', [
+        'stream',
+        '--predicate',
+        `(eventMessage ENDSWITH "${sessionSuffix}")`,
+        '--style',
+        'compact',
+    ]);
+    logProcess.stdout?.on('data', (data) => {
+        const lines = data.toString().split('\n');
+^ the macOS unified log. Equally available to Aegis, which is what
+  aegis/violations.py reads.
+
+=== 2. FILESYSTEM denials ARE observable, in full ===
+2026-08-19 16:06:14.960 E  kernel[0:21d8a] (Sandbox) Sandbox: cat(7866) deny(1) file-read-data /private/tmp/vtest/home/.ssh/id_rsa
+2026-08-19 16:06:15.038 E  kernel[0:21dac] (Sandbox) Sandbox: cat(7880) deny(1) file-read-data /private/tmp/vtest/home/.ssh/id_rsa
+^ process, pid, operation, full path.
+
+=== 3. NETWORK denials are NOT usefully observable ===
+a) a domain refusal never reaches the kernel at all:
+   'curl https://evil.xyz/' returned http=000, and the whole session
+   produced 1 network-outbound line — which was nc's, not curl's.
+   ASRT refuses domains in its loopback proxy; the kernel never sees it.
+b) a raw-socket denial does reach the kernel, but with no host:
+   2026-08-19 16:07:01.452 E  kernel[0:2232b] (Sandbox) Sandbox: nc(7936) deny(1) network-outbound remote:*:443
+   ^ 'remote:*:443'. Port only. The hostname is not recoverable.
+   => Aegis records no host for a blocked request, because it cannot see one.
+
+=== 4. the log is machine-wide, so attribution must be narrow ===
+denial operations seen in one short capture, by frequency:
+      4 deny(1) sysctl-read
+      4 deny(1) mach-lookup
+      1 deny(1) network-outbound
+   processes producing them included macOS's own daemons:
+   Sandbox: assistantd(
+   Sandbox: bash(
+   Sandbox: biomesyncd(
+   Sandbox: cat(
+   Sandbox: imagent(
+   => a row is written ONLY when the denied path matches a deny pattern in
+      the profile Aegis generated from policy.json. Everything else is
+      counted and reported, never recorded as a row.

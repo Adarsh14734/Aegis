@@ -333,6 +333,85 @@ def _check_keyring(report: Report, policy: Policy | None) -> None:
         )
 
 
+def _check_sandbox(report: Report, policy) -> None:
+    """S9b. Report the kernel boundary's status, including that it is opt-in.
+
+    The single most misleading thing `doctor` could do is pass on a machine
+    where the agent runs unconfined. Every other check here concerns the MCP
+    pipe; C11 concerns everything else the agent can do, and **it applies only
+    to agents launched with `aegis run`**. A user who starts their agent the
+    normal way gets no sandbox at all, and nothing else in this report would
+    say so.
+
+    So this is reported as a WARN rather than a FAIL when the runtime is
+    present: not having opted into the sandbox is a configuration choice, not a
+    broken installation. It is a FAIL only when a profile on disk disagrees with
+    the policy, because that is a real inconsistency — the kernel would enforce
+    yesterday's rules if `aegis run` were used without regenerating.
+    """
+    from . import sandbox as sandbox_mod
+
+    runtime = sandbox_mod.find_runtime()
+    problems = sandbox_mod.preflight()
+    always = (
+        "The sandbox applies ONLY to agents started with `aegis run`. An agent "
+        "you launch any other way has no kernel boundary — its Bash, its "
+        "subprocesses and its native file tools are unconstrained, exactly as "
+        "they were before S9."
+    )
+
+    if problems:
+        report.add(
+            "OS sandbox (C11)", WARN,
+            *[p.splitlines()[0] for p in problems],
+            f"Install it with: {sandbox_mod.RUNTIME_INSTALL_HINT}",
+            "Without it `aegis run` refuses to launch — it never runs an agent "
+            "unconfined — so this is a missing capability, not a silent hole.",
+            always,
+        )
+        return
+
+    if policy is None:
+        report.add(
+            "OS sandbox (C11)", WARN,
+            f"runtime present: {runtime}",
+            "no loadable policy, so no profile can be generated or compared.",
+            always,
+        )
+        return
+
+    matches, wanted = sandbox_mod.matches_policy(policy)
+    path = sandbox_mod.profile_path()
+    if not path.exists():
+        report.add(
+            "OS sandbox (C11)", WARN,
+            f"runtime present: {runtime}",
+            f"no profile written yet at {path} — `aegis run` generates one on "
+            f"each launch, so this only means the sandbox has not been used.",
+            f"the profile this policy would generate has digest {wanted[:16]}",
+            always,
+        )
+    elif matches:
+        report.add(
+            "OS sandbox (C11)", PASS,
+            f"runtime present: {runtime}",
+            f"profile {path} matches the current policy (digest {wanted[:16]})",
+            always,
+        )
+    else:
+        report.add(
+            "OS sandbox (C11)", FAIL,
+            f"runtime present: {runtime}",
+            f"the profile at {path} does NOT match the current policy.",
+            f"policy would generate digest {wanted[:16]}.",
+            "The policy has been edited since that profile was written. "
+            "`aegis run` regenerates it on every launch, so a live session is "
+            "not affected — but anything reading this file, or a stale copy "
+            "used by hand, describes rules the policy no longer states.",
+            always,
+        )
+
+
 def _check_wiring(
     report: Report, project: Path
 ) -> tuple[list[tuple[clients.Detected, str]], list[clients.Detected]]:
@@ -750,14 +829,23 @@ WHAT THIS DOES NOT COVER
 Everything above concerns tool calls that cross an MCP stdio pipe Aegis was put
 in front of. That is a narrow boundary, and these are outside it:
 
-  Bash, and every shell command.  An agent that runs `cat ~/.ssh/id_rsa` never
-  touches this proxy. In the S1 live test three of the model's four attempts on
-  a secret went through Bash; Aegis blocked none of them — the client's own
-  permission rules did. Those rules are your agent's configuration, not an
-  Aegis control, and a different client may not have them.
+  Bash, every shell command, and the agent's native file tools (Read, Write,
+  Edit in Claude Code) — UNLESS the agent was started with `aegis run`, which
+  puts the whole process tree inside an OS sandbox and is the only thing that
+  covers them. Without it: in the S1 live test three of the model's four
+  attempts on a secret went through Bash; Aegis blocked none of them — the
+  client's own permission rules did. Those rules are your agent's
+  configuration, not an Aegis control, and a different client may not have
+  them. The sandbox check above says whether that boundary is even available
+  here.
 
-  Native file tools built into the agent (Read, Write, Edit in Claude Code).
-  Same pipe, same absence: they are not MCP calls.
+  Where the agent goes on the network from inside the sandbox.  Kernel denials
+  of denied FILE paths are audited; a blocked domain is refused by the sandbox
+  runtime's proxy and never reaches the kernel log, so it is counted and not
+  individually recorded. Egress Aegis performs itself is fully recorded.
+
+  A kernel escape.  The sandbox is exactly as strong as Seatbelt or bubblewrap
+  underneath it, and a bypass returns the agent to full authority.
 
   MCP servers not routed through the proxy.  Listed above if any were found.
 
@@ -835,6 +923,7 @@ def main(argv: list[str] | None = None) -> int:
     db = _check_audit(report)
     _check_keyring(report, policy)
     wired, found = _check_wiring(report, project)
+    _check_sandbox(report, policy)
 
     # Before the probe, not after: the probe launches its own copy of the
     # configured command, and a check that scans the process table has no

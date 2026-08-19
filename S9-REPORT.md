@@ -3,9 +3,12 @@
 **Sprint:** S9
 **Date:** 2026-08-18
 **Control:** C11 — constrain the agent's whole process tree, not just its MCP traffic
+**Revised 2026-08-19 (S9b):** gap 7 closed — kernel denials now reach the audit
+log as `sandbox_denied` rows, and `aegis doctor` reports sandbox status. See
+§S9b.
 **Status:** **VERIFIED (harness, macOS)**. Not unqualified VERIFIED: no live
 Claude Code session has been run inside `aegis run`.
-Suite: **67 passed, 0 failed, 0 NOT RUN**, exit 0. Every prior suite at its
+Suite: **94 passed, 0 failed, 0 NOT RUN**, exit 0. Every prior suite at its
 documented figure.
 
 ---
@@ -104,12 +107,16 @@ pinning nothing.
 |---|---|
 | `aegis/sandbox.py` | policy.json → sandbox profile, digest, preflight, fail-closed establishment |
 | `aegis/cli.py` | `aegis run -- <agent-command>`, `--deny-all-network`, `--print-profile` |
-| `tests/s9.py` | 67 checks: real processes, real runtime, files that exist |
+| `tests/s9.py` | 94 checks: real processes, real runtime, files that exist |
 | `evidence/S9-suite.txt` | Suite output plus a regression run of every prior suite |
 | `evidence/S9-kernel-enforcement.txt` | S1's own attempts, run inside `aegis run` |
+| `aegis/violations.py` | **S9b.** Reads macOS sandbox violations; `sandbox_denied` rows |
+| `evidence/S9b-violation-observability.txt` | **S9b.** What is and is not observable, measured |
+| `evidence/S9b-suite.txt` | **S9b.** 94 checks plus a regression run |
 
-`aegis/policy.py` is **unchanged** — no decision logic touched. S7's onboarding
-is untouched: `init`, `doctor` and `uninstall` are byte-identical.
+`aegis/policy.py` is **unchanged** — no decision logic touched. S7's `init` and
+`uninstall` are byte-identical. **`doctor` was changed in S9b**, on instruction,
+to report sandbox status; S9 itself touched no S7 onboarding.
 
 ### One source of truth
 
@@ -303,6 +310,124 @@ believed was.
 
 ---
 
+## S9b — closing gap 7: the kernel layer now reaches the audit log
+
+S9 shipped C11 enforcing without observing. `cat ~/.ssh/id_rsa` failed with
+EPERM, the agent saw it, and **no audit row existed**: the two strongest
+controls did not meet. That is now closed for the part that is observable, and
+stated plainly for the part that is not.
+
+### ASRT's violation API is unreachable from what Aegis wraps
+
+`@anthropic-ai/sandbox-runtime` has a real violation store
+(`getViolationsForCommand`, `SandboxViolationStore`). It lives in the Node
+**library**. Aegis wraps the `srt` **binary**, and `grep -c -i violation
+dist/cli.js` is **0** — the CLI does not surface violations at all.
+
+What ASRT's own macOS store does is spawn:
+
+```
+log stream --predicate '(eventMessage ENDSWITH "<session-suffix>")' --style compact
+```
+
+and filter for `Sandbox:` + `deny`. The *source* is the macOS unified log, which
+is equally available to Aegis. `aegis/violations.py` reads that same source. It
+writes no sandbox and contains no isolation logic; D2 is about not building a
+sandbox, and reading an OS log is not building one.
+
+### What is observable, measured rather than assumed
+
+`evidence/S9b-violation-observability.txt` has the raw capture.
+
+**Filesystem denials: fully observable.**
+
+```
+Sandbox: cat(7866) deny(1) file-read-data /private/tmp/.../.ssh/id_rsa
+```
+
+Process, pid, operation, full path. This is what `sandbox_denied` rows are made
+of, and it is what the brief asked for.
+
+**Blocked hosts: NOT observable. Aegis does not record them and does not
+pretend to.** Two independent reasons, both measured:
+
+1. A *domain* refusal never reaches the kernel. ASRT lets the sandbox reach its
+   own loopback proxy and the proxy refuses the domain, so
+   `curl https://evil.xyz/` returns `http=000` and the kernel logs **nothing**.
+   One `network-outbound` line appeared in the whole capture and it was `nc`'s,
+   not curl's.
+2. A *raw socket* denial does reach the kernel, but as
+   `network-outbound remote:*:443` — **port only, no hostname**, unrecoverable
+   from the line.
+
+So the brief's "path or host" is delivered as path. The host half is impossible
+with this runtime, the `sandbox_closed` row says so in the log itself, and the
+suite asserts that **no row ever mentions the blocked domain** — an audit log
+that claimed to see hosts it cannot see would be worse than one admitting the
+gap.
+
+### Attribution is deliberately narrow, because the log is machine-wide
+
+A five-second capture carried denials from `imagent`, `assistantd`,
+`biomesyncd` and `triald` — macOS sandboxing its own daemons. Ordinary
+processes also generate constant benign noise: `sysctl-read`, `mach-lookup` and
+`iokit-open-user-client` outnumbered real denials in the capture.
+
+Recording any of that would be inventing rows. So a line becomes a row only
+when **the denied path matches a deny pattern in the profile Aegis generated
+from policy.json** — the exact claim worth making, checked against our own
+profile rather than guessed from process names. Everything else is counted and
+reported in the `sandbox_closed` row, so the log says what it saw and could not
+attribute instead of silently dropping it.
+
+### What a session now records
+
+```
+1|aegis run     |allow|sandbox_established|… watching for kernel denials
+2|sandbox:cat   |deny |sandbox_denied     |the kernel refused file-read-data on …/.ssh/id_rsa
+3|sandbox:cat   |deny |sandbox_denied     |the kernel refused file-read-data on …/workspace/.env
+4|aegis run     |allow|sandbox_closed     |2 kernel denial(s) recorded; 8 benign denial(s) ignored; …
+```
+
+Each denial row names the path, the process and pid, and says the denial was an
+**OS-level EPERM, not a policy-engine decision** — the distinction is the whole
+point of the row. `tool` carries `sandbox:<process>` rather than an MCP tool
+name, so it cannot be misread as a tool that exists.
+
+**No schema change.** `sandbox_denied` is a new `rule_id` under the existing v2
+payload; the `row_hash` rule is untouched and the chain verifies with these rows
+in it.
+
+Rows are written on the main thread while the agent runs (drained once a
+second), so a long session records denials as they happen. Only the log reader
+is threaded — S5's SQLite lesson.
+
+**Failure is non-fatal and visible.** If `log stream` cannot start, the session
+still runs and the audit records that observation was unavailable and why. An
+agent that refused to launch because a *log reader* failed would trade a working
+control for a missing one.
+
+### `aegis doctor` now reports the sandbox
+
+A new check reports whether `srt` is present, whether the profile on disk
+matches the current policy, and — on every run, in every state — that
+
+> The sandbox applies ONLY to agents started with `aegis run`. An agent you
+> launch any other way has no kernel boundary — its Bash, its subprocesses and
+> its native file tools are unconstrained, exactly as they were before S9.
+
+A missing runtime is a **WARN**: not having opted in is a configuration choice,
+and `aegis run` refuses to launch without it, so it is a missing capability
+rather than a silent hole. A profile that **disagrees with the policy** is a
+**FAIL**, because that is a real inconsistency.
+
+Doctor's NOT COVERED block was rewritten: Bash and native tools are no longer
+listed as simply uncovered, since `aegis run` covers them. Two S7 assertions
+checked the old wording and were updated to track the intent — both still assert
+that Bash and the native tools are named.
+
+---
+
 ## Known gaps (do not claim these are handled)
 
 1. **A kernel escape defeats C11 entirely** (§7.7). It is now load-bearing: it is
@@ -313,22 +438,25 @@ believed was.
    starts themselves gets no sandbox, and **nothing detects that** — not Aegis,
    not `aegis doctor`. Same shape as S7's stale-client gap, without S7's
    process-table check.
-3. **`aegis doctor` says nothing about the sandbox.** No S7 onboarding was
-   changed, by instruction. So a stale profile on disk, a missing runtime, or an
-   unsandboxed setup is not reported by the command built to prove the
-   installation works. `sandbox.matches_policy()` exists and is called only by
-   the suite.
+3. ~~`aegis doctor` says nothing about the sandbox.~~ **Closed in S9b.** Doctor
+   reports runtime presence, profile-vs-policy agreement, and that `aegis run`
+   is required for any kernel enforcement. It still cannot detect that an agent
+   is *currently* running unsandboxed — gap 2 — it can only say the boundary is
+   opt-in.
 4. **The network residual** (§The network residual): bash inside can reach
    policy's allowed domains. Only `--deny-all-network` closes it, at C4's cost.
 5. **`audit.db` is writable from inside the sandbox**, necessarily. S2 gap 1,
    now with a kernel boundary around it that does not protect it.
 6. **`aegis init` does not write the sandbox profile or mention `aegis run`.**
    Onboarding a stranger into C11 is a separate piece of work.
-7. **No violation reporting.** ASRT can surface Seatbelt violations from the
-   system log store; Aegis does not read them, so a denied `cat` inside the
-   sandbox produces an EPERM the agent sees and **no audit row at all**. The
-   audit log records that a sandbox was established, not what it stopped. This
-   is the largest missing piece: C11 enforces without observing.
+7. ~~No violation reporting.~~ **Closed in S9b** for filesystem denials (§S9b).
+   What remains open, and is now the honest residual: **a blocked host is never
+   recorded**, because a domain refusal happens in the sandbox runtime's proxy
+   and never reaches the kernel log, and a raw-socket denial carries only a
+   port. Also unrecorded: denials the kernel coalesces ("N duplicate reports"),
+   so row count is not a reliable count of attempts; and any denial whose path
+   does not match a policy deny pattern, which is counted in `sandbox_closed`
+   but not itemised.
 8. **Read is allow-by-default outside `deny_paths`.** The agent can read most of
    the filesystem — source, dotfiles not matching a deny pattern, other projects.
    Only writes and the named deny patterns are constrained. A read-deny posture
@@ -339,7 +467,19 @@ believed was.
    anything (§7.2).
 10. **`srt --version` does not report the package version**, so version pinning
     on that string is meaningless.
-11. **Still reviewed by nobody but its author.** THREAT-MODEL.md §10 is empty
+11. **Violation observation is macOS-only.** `aegis/violations.py` reads the
+    macOS unified log. On Linux the sandbox enforces and nothing is recorded
+    about what it stopped; the session row says so rather than implying
+    coverage.
+12. **A harness reached real state again.** During S9b a shell loop failed to
+    apply its `AEGIS_*` overrides and four `sandbox_established` rows (92–95)
+    and a real `sandbox-profile.json` landed in the operator's actual data
+    directory. The rows are honest records of real establishments, the chain
+    verifies, and they were left in place — deleting rows from the live log is
+    exactly what S2's operating rule forbids. This is the fifth time (S2, S3a,
+    S4, S5, now this): **shell-level env plumbing is not a sandbox, and only the
+    Python-level pinning in `tests/*.py` has ever held.**
+13. **Still reviewed by nobody but its author.** THREAT-MODEL.md §10 is empty
     after ten sprints.
 
 ---

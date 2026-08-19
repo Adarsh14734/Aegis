@@ -483,6 +483,131 @@ check("...naming the policy as the source of the profile",
 
 
 # ---------------------------------------------------------------------------
+rule("6. KERNEL DENIALS REACH THE AUDIT LOG (S9 gap 7)")
+# ---------------------------------------------------------------------------
+
+from aegis import violations as violations_mod  # noqa: E402
+
+# --- the parser, against real captured lines --------------------------------
+REAL_LINES = {
+    "file": "2026-08-19 16:06:14.960 E  kernel[0:21d8a] (Sandbox) Sandbox: "
+            "cat(7866) deny(1) file-read-data /private/tmp/x/.ssh/id_rsa",
+    "dup":  "2026-08-19 16:06:12.959 E  kernel[0:21d5c] (Sandbox) 3 duplicate "
+            "reports for Sandbox: assistantd(800) deny(1) "
+            "iokit-open-user-client AppleKeyStoreUserClient",
+    "net":  "2026-08-19 16:07:01.452 E  kernel[0:2232b] (Sandbox) Sandbox: "
+            "nc(7936) deny(1) network-outbound remote:*:443",
+}
+m = violations_mod.VIOLATION_RE.search(REAL_LINES["file"])
+check("a real kernel violation line parses", m is not None)
+if m:
+    check("...with the process, pid, operation and path",
+          (m.group("proc"), m.group("pid"), m.group("op"), m.group("detail"))
+          == ("cat", "7866", "file-read-data", "/private/tmp/x/.ssh/id_rsa"),
+          str(m.groups()))
+m = violations_mod.VIOLATION_RE.search(REAL_LINES["dup"])
+check("the kernel's 'N duplicate reports' form also parses",
+      m is not None and m.group("proc") == "assistantd", str(m and m.groups()))
+m = violations_mod.VIOLATION_RE.search(REAL_LINES["net"])
+check("a network denial parses but carries NO host, only a port",
+      m is not None and m.group("detail") == "remote:*:443"
+      and "nc" not in m.group("detail"), str(m and m.group("detail")))
+
+pats = violations_mod.deny_patterns(sandbox_mod.profile_from_policy(POLICY))
+check("a denied path matching our policy is attributable",
+      violations_mod.matches_policy(str(KEYFILE.resolve()), pats), str(pats)[:120])
+check("an ordinary workspace path is NOT attributable",
+      not violations_mod.matches_policy(str(PLAIN.resolve()), pats))
+check("a macOS daemon's own denial is not attributable to our policy",
+      not violations_mod.matches_policy("/System/Library/Frameworks/x", pats))
+
+# --- end to end through aegis run -------------------------------------------
+if problems:
+    not_run("kernel denials reaching the audit log",
+            "no sandbox runtime, so nothing can be denied by a kernel")
+else:
+    denial_db = LAB / "denials.db"
+    got = aegis_run(
+        ["--", "bash", "-c",
+         f"cat {KEYFILE}; cat {ENVFILE}; cat {PLAIN}; "
+         f"curl -s -m 8 -o /dev/null https://evil.xyz/ || true"],
+        {"AEGIS_AUDIT_DB": str(denial_db)}, timeout=300)
+
+    rows = list(sqlite3.connect(str(denial_db)).execute(
+        "SELECT tool, effect, rule_id, reason, paths FROM audit ORDER BY id"))
+    denied = [r for r in rows if r[2] == "sandbox_denied"]
+    for r in denied:
+        print(f"    {r[0]:<16} {r[2]}  {json.loads(r[4])}")
+
+    check("a kernel denial produces an audit row", len(denied) >= 1,
+          f"rows={[(r[0], r[2]) for r in rows]}  stderr={got.stderr[-300:]}")
+    check("...one per denied path, for both denied files", len(denied) >= 2,
+          str([json.loads(r[4]) for r in denied]))
+    check("...recording the path", any(str(KEYFILE.resolve()) in r[4] for r in denied),
+          str([r[4] for r in denied]))
+    check("...naming the process that was refused",
+          any(r[0].startswith("sandbox:") for r in denied), str([r[0] for r in denied]))
+    check("...as a denial", all(r[1] == "deny" for r in denied))
+    check("...saying the KERNEL refused it, not the policy engine",
+          all("OS-level denial (EPERM)" in r[3] and "not a policy-engine" in r[3]
+              for r in denied), str(denied[:1]))
+    check("the allowed read produced no denial row",
+          not any(str(PLAIN.resolve()) in r[4] for r in denied))
+
+    est = [r for r in rows if r[2] == "sandbox_established"]
+    closed = [r for r in rows if r[2] == "sandbox_closed"]
+    check("the session records that it was watching", bool(est))
+    check("...and a closing row summarising what was seen", bool(closed))
+    check("...which counts the denials it could not attribute rather than "
+          "dropping them silently",
+          any("not recorded" in r[3] or "benign" in r[3] for r in closed),
+          str(closed)[:300])
+    check("...and states plainly that blocked HOSTS are not recordable",
+          any("never reaches the kernel log" in r[3] for r in closed),
+          str(closed)[:400])
+    check("no row invents a host for the blocked curl",
+          not any("evil.xyz" in r[3] for r in rows), str(rows)[:200])
+
+    v = subprocess.run([sys.executable, str(ROOT / "aegis" / "verify.py"),
+                        str(denial_db)], capture_output=True, text=True, timeout=120)
+    check("the chain verifies with sandbox_denied rows in it", v.returncode == 0,
+          (v.stdout + v.stderr)[:200])
+    check("...and they use the existing row rule, not a new schema",
+          "row(s) verified" in v.stdout, v.stdout[:120])
+
+# --- doctor reports sandbox status ------------------------------------------
+doc_env = {"AEGIS_POLICY": str(POLICY_PATH), "PYTHONPATH": str(ROOT),
+           "AEGIS_AUDIT_DB": str(LAB / "doctor.db"),
+           "AEGIS_SANDBOX_PROFILE": str(LAB / "sandbox-profile.json"),
+           "AEGIS_KILLSWITCH": str(LAB / "KILLSWITCH")}
+got = subprocess.run([sys.executable, "-m", "aegis.cli", "doctor", "--no-probe"],
+                     capture_output=True, text=True, timeout=300,
+                     env={**os.environ, **doc_env}, cwd=str(LAB))
+check("doctor reports the sandbox", "OS sandbox (C11)" in got.stdout, got.stdout[:300])
+check("...saying whether the runtime is present",
+      "runtime present" in got.stdout or "not on PATH" in got.stdout, got.stdout[:400])
+check("...and that aegis run is REQUIRED for any kernel enforcement",
+      "ONLY to agents started with `aegis run`" in got.stdout, got.stdout[:600])
+check("...and that an agent started any other way has no boundary",
+      "no kernel boundary" in got.stdout, got.stdout[:600])
+check("doctor's NOT COVERED section no longer claims Bash is simply uncovered",
+      "UNLESS the agent was started with `aegis run`" in got.stdout,
+      got.stdout[-1500:])
+
+# A profile that disagrees with the policy is a FAIL, not a warning.
+(LAB / "sandbox-profile.json").write_text(json.dumps(
+    {"filesystem": {"denyRead": [], "allowWrite": [], "denyWrite": []},
+     "network": {"allowedDomains": [], "deniedDomains": []}}))
+got = subprocess.run([sys.executable, "-m", "aegis.cli", "doctor", "--no-probe"],
+                     capture_output=True, text=True, timeout=300,
+                     env={**os.environ, **doc_env}, cwd=str(LAB))
+check("a profile that does not match the policy FAILS doctor",
+      "[ FAIL ] OS sandbox (C11)" in got.stdout and got.returncode != 0,
+      got.stdout[:600])
+sandbox_mod.write_profile(sandbox_mod.profile_from_policy(POLICY))
+
+
+# ---------------------------------------------------------------------------
 rule("SUMMARY")
 # ---------------------------------------------------------------------------
 

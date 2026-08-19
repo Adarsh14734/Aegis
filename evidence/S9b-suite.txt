@@ -1,0 +1,190 @@
+Aegis S9b suite — 2026-08-19 16:15:26 IST, macOS 26.5.1, Python 3.14.3
+sandbox runtime: /Users/adarsh/.local/bin/srt
+
+$ python3 tests/s9.py
+
+lab: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg
+outside-the-sandbox dir: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-outside-zn5bo3y0
+
+==============================================================================
+1. WRAPPING, NOT WRITING — what this machine can offer (D2)
+==============================================================================
+  platform: darwin   runtime: /Users/adarsh/.local/bin/srt
+  pass  the runtime this wraps is Anthropic's, named in D2
+  pass  aegis/sandbox.py contains no isolation logic of its own
+  pass  preflight returns a list of every problem, not just the first
+  pass  a missing runtime is detected
+  pass  ...and preflight refuses because of it
+  pass  establish() raises rather than returning an unsandboxed handle
+  pass  ...and the message says how to install the runtime
+
+==============================================================================
+2. THE PROFILE IS GENERATED FROM policy.json AND NOTHING ELSE
+==============================================================================
+  {
+    "filesystem": {
+      "denyRead": [
+        "/**/*.pem",
+        "/**/.aws",
+        "/**/.aws/**",
+        "/**/.env",
+        "/**/.ssh",
+        "/**/.ssh/**",
+        "/**/id_rsa"
+      ],
+      "allowWrite": [
+        "/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg",
+        "/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg/workspace"
+      ],
+      "denyWrite": [
+        "/**/*.pem",
+        "/**/.aws",
+        "/**/.aws/**",
+        "/**/.env",
+        "/**/.ssh",
+        "/**/.ssh/**",
+        "/**/id_rsa",
+        "/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg/KILLSWITCH",
+        "/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg/policy.json"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "example.com"
+      ],
+      "deniedDomains": []
+    }
+  }
+  pass  every workspace root is writable
+  pass  a directory outside the policy is not writable
+  pass  every path in the profile is absolute and already symlink-resolved
+  pass  every deny_paths pattern is denied for READ
+  pass  ...and for WRITE too
+  pass  a bare pattern becomes a basename glob, matching policy.py's two-way match
+  pass  a directory pattern denies the directory as well as its contents
+  pass  EVERY deny pattern is anchored at the filesystem root, not at cwd
+  pass  policy.json itself is write-denied (A7, at the kernel)
+  pass  the kill switch cannot be removed from inside (C10)
+  pass  network is the policy's allowed_domains and nothing more
+  pass  --deny-all-network allows no domain at all
+  pass  the digest is stable across identical documents
+  pass  no profile on disk yet reads as 'does not match'
+  pass  the profile is written at 0600
+  pass  ...and now matches the policy
+  pass  an edited policy no longer matches the profile on disk
+  pass  ...and the regenerated digest differs
+  pass  ...because the new pattern is in it
+
+==============================================================================
+3. KERNEL ENFORCEMENT — the checks the sprint exists for
+==============================================================================
+  pass  CONTROL: the fake ssh key really exists and is readable unsandboxed
+  pass  CONTROL: the fake aws creds really exists and is readable unsandboxed
+  pass  CONTROL: the workspace .env really exists and is readable unsandboxed
+  sandbox established via srt on darwin; profile 37b4485ab1a7a472; 2 writable root(s), 7 read-denied pattern(s), 1 domain(s) reachable
+  pass  the runtime accepted the generated profile
+  pass  bash cat of a deny_paths file FAILS inside the sandbox
+  pass  ...with a kernel error, not a policy message
+  pass  a deny_paths directory pattern is enforced too (**/.aws/**)
+  pass  a deny_paths file INSIDE the workspace is still denied
+  pass  ...which is deny-beats-allow, the same precedence policy.py uses
+  pass  an ordinary workspace file is still readable
+  pass  the denial is not specific to one program
+  pass  a legitimate write inside a workspace root SUCCEEDS
+  pass  ...and really landed on disk
+  pass  a write OUTSIDE workspace_roots fails
+  pass  ...with a kernel error
+  pass  the agent cannot rewrite policy.json (A7, kernel-enforced)
+  pass  ...and the policy is unchanged afterwards
+  pass  the agent cannot delete the kill switch (C10 survives inside)
+  pass  bash curl to a host outside allowed_domains fails
+  pass  with --deny-all-network, even an allowed domain is unreachable
+  KNOWN RESIDUAL — bash reaching an allowed domain from inside the
+           sandbox: observed '000 rc=77'. Documented in
+           S9-REPORT.md §The network residual; not a pass or a fail.
+
+==============================================================================
+4. THE MCP PROXY STILL WORKS INSIDE THE SANDBOX
+==============================================================================
+  pass  the proxy starts and speaks MCP inside the sandbox
+  pass  an allowed read is forwarded and answered
+  pass  a deny_paths read is still denied by the MCP layer
+  pass  ...so both layers cover it: the MCP layer says why, the kernel says no
+  pass  the audit log was written from inside the sandbox (C3 survives)
+  pass  the chain still verifies
+
+==============================================================================
+5. `aegis run` — refusal, and what it records
+==============================================================================
+  pass  aegis run REFUSES when the sandbox cannot be established
+  pass  ...and launches nothing
+  pass  ...and says REFUSING TO LAUNCH
+  pass  ...and explains why an unconfined fallback would be worse
+  pass  the refusal is recorded
+  pass  ...as a denial
+  pass  aegis run launches the command inside the sandbox
+  pass  ...and reports the boundary it does not cover
+  pass  establishment is recorded
+  pass  ...with the profile digest in the reason
+  pass  --print-profile emits the document without launching
+  pass  aegis run with no command is a usage error
+  pass  an unloadable policy refuses the launch too
+  pass  ...naming the policy as the source of the profile
+
+==============================================================================
+6. KERNEL DENIALS REACH THE AUDIT LOG (S9 gap 7)
+==============================================================================
+  pass  a real kernel violation line parses
+  pass  ...with the process, pid, operation and path
+  pass  the kernel's 'N duplicate reports' form also parses
+  pass  a network denial parses but carries NO host, only a port
+  pass  a denied path matching our policy is attributable
+  pass  an ordinary workspace path is NOT attributable
+  pass  a macOS daemon's own denial is not attributable to our policy
+    sandbox:cat      sandbox_denied  ['/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg/fake-home/.ssh/id_rsa']
+    sandbox:cat      sandbox_denied  ['/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg/workspace/.env']
+  pass  a kernel denial produces an audit row
+  pass  ...one per denied path, for both denied files
+  pass  ...recording the path
+  pass  ...naming the process that was refused
+  pass  ...as a denial
+  pass  ...saying the KERNEL refused it, not the policy engine
+  pass  the allowed read produced no denial row
+  pass  the session records that it was watching
+  pass  ...and a closing row summarising what was seen
+  pass  ...which counts the denials it could not attribute rather than dropping them silently
+  pass  ...and states plainly that blocked HOSTS are not recordable
+  pass  no row invents a host for the blocked curl
+  pass  the chain verifies with sandbox_denied rows in it
+  pass  ...and they use the existing row rule, not a new schema
+  pass  doctor reports the sandbox
+  pass  ...saying whether the runtime is present
+  pass  ...and that aegis run is REQUIRED for any kernel enforcement
+  pass  ...and that an agent started any other way has no boundary
+  pass  doctor's NOT COVERED section no longer claims Bash is simply uncovered
+  pass  a profile that does not match the policy FAILS doctor
+
+==============================================================================
+SUMMARY
+==============================================================================
+  pass  the operator's real Aegis state is untouched
+
+  94 passed, 0 failed, 0 NOT RUN
+
+  lab: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-zdizztpg   (delete when done)
+  outside dir: /var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9-outside-zn5bo3y0
+
+  Never established by this suite, on any machine:
+    - that a kernel escape is survivable. It is not (THREAT-MODEL.md §7.7)
+    - anything about an agent the user starts themselves (§7.6)
+    - Linux/bubblewrap. Nothing here has run on Linux
+
+
+=== regression, same working tree ===
+tests/tamper.py  exit 0   all cases behaved as specified
+tests/s3a.py     exit 0   99 passed, 0 failed
+tests/s3b.py     exit 0   60 passed, 0 failed
+tests/s4.py      exit 1   67 passed, 0 failed, 2 NOT RUN
+tests/s5.py      exit 1   80 passed, 0 failed, 1 NOT RUN
+tests/s7.py      exit 0   139 passed, 0 failed
+tests/s8.py      exit 0   109 passed, 0 failed

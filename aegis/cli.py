@@ -123,6 +123,7 @@ def _run(argv: list[str]) -> int:
     from .policy import Policy, PolicyError
     from .proxy import default_policy_path
     from . import sandbox as sandbox_mod
+    from . import violations as violations_mod
 
     parser = argparse.ArgumentParser(
         prog="aegis run",
@@ -170,9 +171,10 @@ def _run(argv: list[str]) -> int:
               f"is an absent control.", file=sys.stderr)
         return 2
 
-    def record(effect: str, rule_id: str, reason: str, paths=()) -> None:
+    def record(effect: str, rule_id: str, reason: str, paths=(),
+               tool: str = "aegis run") -> None:
         try:
-            store.record(tool="aegis run", effect=effect, rule_id=rule_id,
+            store.record(tool=tool, effect=effect, rule_id=rule_id,
                          reason=reason, paths=list(paths))
         except Exception as exc:  # noqa: BLE001
             print(f"aegis run: WARNING could not record to the audit log: {exc}",
@@ -190,9 +192,18 @@ def _run(argv: list[str]) -> int:
               "failure this command exists to prevent.", file=sys.stderr)
         return 3
 
-    record("allow", "sandbox_established", box.summary(), [str(box.profile)])
+    # S9b: start watching for kernel denials BEFORE the agent runs, or the
+    # first thing it does is the thing we miss. Non-fatal — see Observer.
+    observer = violations_mod.Observer(box.document)
+    observation = observer.start()
+
+    record("allow", "sandbox_established",
+           f"{box.summary()}; {observation.summary() if not observation.available else 'watching for kernel denials'}",
+           [str(box.profile)])
 
     print(f"[aegis] {box.summary()}", file=sys.stderr)
+    if not observation.available:
+        print(f"[aegis] WARNING {observation.unavailable_reason}", file=sys.stderr)
     print(f"[aegis] profile: {box.profile}", file=sys.stderr)
     if known.deny_all_network:
         print("[aegis] --deny-all-network: no domain is reachable, including "
@@ -205,16 +216,51 @@ def _run(argv: list[str]) -> int:
         store.close()
         return 0
 
+    def record_denials(rows) -> None:
+        """One audit row per kernel denial of a path this policy denies.
+
+        rule_id `sandbox_denied`, and the reason says the kernel refused it —
+        the distinction from a policy-engine denial is the whole point of the
+        row. No schema change: the existing row_hash rule is untouched and this
+        is simply a new rule_id.
+        """
+        for violation in rows:
+            # `sandbox:<process>` rather than the MCP-tool name this column
+            # usually carries: the actor here is a process the kernel refused,
+            # and the prefix keeps it from reading as a tool that exists.
+            record("deny", "sandbox_denied", violation.reason(), [violation.path],
+                   tool=f"sandbox:{violation.process}")
+            print(f"[aegis] kernel denied {violation.operation} "
+                  f"{violation.path} to {violation.process}", file=sys.stderr)
+
     wrapped = box.wrap(command)
-    store.close()  # the child inherits nothing; the store belongs to this process
+    code = 3
     try:
-        return subprocess.call(wrapped)
+        child = subprocess.Popen(wrapped)
+        # Drain while the agent runs, so a long session records denials as they
+        # happen rather than in a heap at the end. Every audit write stays on
+        # this thread; only the log reader is threaded (S5's SQLite lesson).
+        while True:
+            try:
+                code = child.wait(timeout=1.0)
+                break
+            except subprocess.TimeoutExpired:
+                record_denials(observer.drain())
     except KeyboardInterrupt:
-        return 130
+        code = 130
     except OSError as exc:
         print(f"aegis run: the sandboxed command could not start: {exc}",
               file=sys.stderr)
-        return 3
+        code = 3
+
+    record_denials(observer.stop())
+    record("allow", "sandbox_closed",
+           f"sandbox session ended; {observation.summary()}. "
+           f"{violations_mod.NETWORK_NOT_OBSERVABLE}",
+           [str(box.profile)])
+    print(f"[aegis] {observation.summary()}", file=sys.stderr)
+    store.close()
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:
