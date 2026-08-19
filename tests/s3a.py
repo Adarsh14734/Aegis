@@ -247,7 +247,14 @@ check(load(allowed_domains=["::1", "2001:db8::1"]).allowed_domains
 
 rule("6. DISCLOSURE — the secret must not reach the audit db, stderr, or the frame")
 
-LAB = Path(tempfile.mkdtemp(prefix="aegis-s3a-"))
+# --- labguard: pins every Aegis path into a temp lab and verifies it, in this
+# --- process AND in a child, before anything runs. Five suites have written to
+# --- the operator's real installation because env pinning failed silently; this
+# --- aborts instead. See tests/labguard.py.
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
+
+LAB = labguard.pin("aegis-s3a-")
 WS = LAB / "workspace"
 WS.mkdir()
 DB = LAB / "audit.db"

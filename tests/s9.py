@@ -63,17 +63,22 @@ def rule(title: str) -> None:
 # lab, pinned before anything resolves a default path (S5 finding 1)
 # ---------------------------------------------------------------------------
 
-LAB = Path(tempfile.mkdtemp(prefix="aegis-s9-"))
+# --- labguard: pins every Aegis path into a temp lab and verifies it, in this
+# --- process AND in a child, before anything runs. Five suites have written to
+# --- the operator's real installation because env pinning failed silently; this
+# --- aborts instead. See tests/labguard.py.
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
+
+LAB = labguard.pin("aegis-s9-")
 WS = LAB / "workspace"
 SECRETS = LAB / "fake-home"
+# Deliberately outside the lab: the suite writes NOTHING here, it only proves
+# the sandbox refuses to. labguard covers Aegis's own paths, not this one.
 OUTSIDE = Path(tempfile.mkdtemp(prefix="aegis-s9-outside-"))
 WS.mkdir(parents=True)
 (SECRETS / ".ssh").mkdir(parents=True)
 (SECRETS / ".aws").mkdir(parents=True)
-
-os.environ["AEGIS_AUDIT_DB"] = str(LAB / "audit.db")
-os.environ["AEGIS_KILLSWITCH"] = str(LAB / "KILLSWITCH")
-os.environ["AEGIS_SANDBOX_PROFILE"] = str(LAB / "sandbox-profile.json")
 
 REAL_DIR = (
     Path.home() / "Library" / "Application Support" / "Aegis"

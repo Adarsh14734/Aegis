@@ -70,7 +70,14 @@ def rule(title: str) -> None:
     print("\n" + "=" * 78 + f"\n{title}\n" + "=" * 78)
 
 
-LAB = Path(tempfile.mkdtemp(prefix="aegis-s5-"))
+# --- labguard: pins every Aegis path into a temp lab and verifies it, in this
+# --- process AND in a child, before anything runs. Five suites have written to
+# --- the operator's real installation because env pinning failed silently; this
+# --- aborts instead. See tests/labguard.py.
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
+
+LAB = labguard.pin("aegis-s5-")
 WS = LAB / "workspace"
 DATA = LAB / "data"
 TRASH = LAB / "trash"
@@ -83,7 +90,9 @@ DB = DATA / "audit.db"
 # in-process checks below would engage the switch in the operator's real data
 # directory — stopping their real agent, and leaving it stopped if this suite
 # crashed between engage() and release(). Subprocesses inherit it via ENV.
-os.environ["AEGIS_AUDIT_DB"] = str(DB)
+# Through the guard, so the relocated database — and the kill switch that
+# derives from it — are both re-verified as still inside the lab.
+labguard.repin(AEGIS_AUDIT_DB=str(DB))
 
 _ks = killswitch.killswitch_path()
 if LAB not in _ks.parents:

@@ -21,8 +21,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "aegis"))
 
-LAB = Path(tempfile.mkdtemp(prefix="aegis-budget-"))
-os.environ["AEGIS_AUDIT_DB"] = str(LAB / "audit.db")
+# --- labguard: pins every Aegis path into a temp lab and verifies it, in this
+# --- process AND in a child, before anything runs. Five suites have written to
+# --- the operator's real installation because env pinning failed silently; this
+# --- aborts instead. See tests/labguard.py.
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
+
+LAB = labguard.pin("aegis-budget-")
 
 from policy import Effect, Policy  # noqa: E402
 

@@ -26,7 +26,14 @@ PROXY = ROOT / "aegis" / "proxy.py"
 VERIFY = ROOT / "aegis" / "verify.py"
 MOCK = ROOT / "tests" / "mock_fs_server.py"
 
-LAB = Path(tempfile.mkdtemp(prefix="aegis-s2-"))
+# --- labguard: pins every Aegis path into a temp lab and verifies it, in this
+# --- process AND in a child, before anything runs. Five suites have written to
+# --- the operator's real installation because env pinning failed silently; this
+# --- aborts instead. See tests/labguard.py.
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
+
+LAB = labguard.pin("aegis-s2-")
 WS = LAB / "workspace"
 DB = LAB / "audit.db"
 POLICY = LAB / "policy.json"  # outside WS, or the proxy refuses to start

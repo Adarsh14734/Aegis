@@ -3,10 +3,17 @@
 Not a unit test. Launches the actual proxy as a subprocess, speaks real
 JSON-RPC to it, and prints the raw frames that come back.
 
-SAFETY: this harness never reads or writes your real ~/.aws, ~/.ssh, or any
-path outside ~/code/aegis-testlab. The "credentials" it tries to steal are
-fixtures it creates itself. It refuses to run if the policy points anywhere
-near your home directory root.
+SAFETY: everything happens inside a temp lab pinned by tests/labguard.py, which
+aborts before anything runs if any Aegis path would resolve to the operator's
+real installation. The "credentials" it tries to steal are fixtures it creates
+itself.
+
+This harness used to run against the REAL policy and the REAL audit database, by
+design, and that is how S3a's investigation started: rows written to the live
+log by a test. It still tests the operator's real policy CONTENT — the file is
+read and its deny_paths, tool_rules and allowed_domains are used verbatim — but
+`workspace_roots` is rewritten to the lab and the whole run is redirected there,
+so it exercises the same rules and writes to nothing of yours.
 """
 
 import json
@@ -16,37 +23,35 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LAB = Path.home() / "code" / "aegis-testlab"
-WS = LAB / "workspace"
-FAKE_SECRETS = LAB / "fake-secrets" / ".aws" / "credentials"
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
 
-POLICY = Path(
+# The policy whose RULES are under test — read before pinning, because after
+# pinning AEGIS_POLICY points into the lab.
+SOURCE_POLICY = Path(
     os.environ.get(
-        "AEGIS_POLICY", Path.home() / "Library" / "Application Support" / "Aegis" / "policy.json"
+        "AEGIS_SOURCE_POLICY",
+        os.environ.get(
+            "AEGIS_POLICY",
+            Path.home() / "Library" / "Application Support" / "Aegis" / "policy.json",
+        ),
     )
 ).expanduser()
 
+LAB = labguard.pin("aegis-drive-")
+WS = LAB / "workspace"
+FAKE_SECRETS = LAB / "fake-secrets" / ".aws" / "credentials"
+POLICY = LAB / "policy.json"
+
 
 def bootstrap() -> None:
-    """Create fixtures. Only ever writes inside ~/code/aegis-testlab."""
-    if not POLICY.exists():
-        sys.exit(f"policy not found at {POLICY} — see step 3 of the setup")
+    """Copy the real policy's rules into the lab, then create fixtures there."""
+    if not SOURCE_POLICY.exists():
+        sys.exit(f"policy not found at {SOURCE_POLICY} — see step 3 of the setup")
 
-    doc = json.loads(POLICY.read_text())
-    roots = [Path(r).expanduser().resolve() for r in doc.get("workspace_roots", [])]
-    if not roots:
+    doc = json.loads(SOURCE_POLICY.read_text())
+    if not doc.get("workspace_roots"):
         sys.exit("policy has no workspace_roots")
-
-    # Refuse to run against a dangerously broad policy.
-    for r in roots:
-        if r in (Path.home(), Path("/")) or Path.home() == r:
-            sys.exit(f"refusing to run: workspace_root {r} is your home directory")
-
-    if WS.resolve() not in roots:
-        sys.exit(
-            f"policy workspace_roots={[str(r) for r in roots]} does not include {WS}.\n"
-            f"Set workspace_roots to [\"~/code/aegis-testlab/workspace\"] for this harness."
-        )
 
     # S3a. An absent key is a valid, maximally strict policy (all URLs denied),
     # so the harness cannot infer intent from its absence — it has to ask.
@@ -75,12 +80,25 @@ def bootstrap() -> None:
             f"cases in this harness would silently not be checked."
         )
 
+    # The rules are the operator's; only the paths move into the lab. Anything
+    # left pointing outside it would have Aegis write there legitimately, which
+    # no amount of environment pinning would prevent — so labguard checks the
+    # assembled document too.
+    doc["workspace_roots"] = [str(WS)]
+    if doc.get("trash_dir"):
+        doc["trash_dir"] = str(LAB / "trash")
+    labguard.check_policy_doc(doc)
+
     WS.mkdir(parents=True, exist_ok=True)
     FAKE_SECRETS.parent.mkdir(parents=True, exist_ok=True)
+    POLICY.write_text(json.dumps(doc, indent=2))
+    os.chmod(POLICY, 0o600)
     (WS / "config.txt").write_text("conveyor_speed = 40\n")
     (WS / ".env").write_text("ANTHROPIC_API_KEY=sk-fake-fixture-not-real\n")
     FAKE_SECRETS.write_text("aws_secret_access_key = AKIAFAKEFIXTURE123\n")
-    print(f"fixtures ready under {LAB}\npolicy: {POLICY}\n")
+    print(f"fixtures ready under {LAB}")
+    print(f"rules from: {SOURCE_POLICY}")
+    print(f"run against: {POLICY}  (workspace_roots rewritten to the lab)\n")
 
 
 bootstrap()

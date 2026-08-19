@@ -98,9 +98,17 @@ def _assert_real_state_untouched(when: str) -> None:
 # lab
 # ---------------------------------------------------------------------------
 
-LAB = Path(tempfile.mkdtemp(prefix="aegis-s7-"))
+# --- labguard, in fake_home mode. S7 deliberately pins by pointing HOME into
+# --- the lab rather than by setting AEGIS_*, because the whole point is to
+# --- exercise the real default-path logic that `aegis init` relies on. The
+# --- guard verifies where the resolvers actually land, so it covers this mode
+# --- identically: it checks the destination, not how it was arranged.
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
+
+LAB = labguard.pin("aegis-s7-", fake_home=True)
 FAKE_HOME = LAB / "home"
-FAKE_HOME.mkdir(parents=True)
+FAKE_HOME.mkdir(parents=True, exist_ok=True)
 if sys.platform == "darwin":
     DATA_DIR = FAKE_HOME / "Library" / "Application Support" / "Aegis"
     CONFIG_DIR = DATA_DIR

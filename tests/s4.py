@@ -109,7 +109,14 @@ def rule(title: str) -> None:
     print("\n" + "=" * 78 + f"\n{title}\n" + "=" * 78)
 
 
-LAB = Path(tempfile.mkdtemp(prefix="aegis-s4-"))
+# --- labguard: pins every Aegis path into a temp lab and verifies it, in this
+# --- process AND in a child, before anything runs. Five suites have written to
+# --- the operator's real installation because env pinning failed silently; this
+# --- aborts instead. See tests/labguard.py.
+sys.path.insert(0, str(ROOT / "tests"))
+import labguard  # noqa: E402
+
+LAB = labguard.pin("aegis-s4-")
 WS = LAB / "workspace"
 WS.mkdir()
 
