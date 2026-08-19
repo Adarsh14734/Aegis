@@ -1,0 +1,52 @@
+Aegis S9 — D2 evaluation of @anthropic-ai/sandbox-runtime, before writing anything
+2026-08-18 22:24:15 IST, macOS 26.5.1
+binary: /Users/adarsh/.local/bin/srt
+srt --version says: 1.0.0   <-- NOT the npm version (0.0.73); do not pin on it
+primitives: sandbox-exec present
+
+D2 asks whether the vendor sandbox can be wrapped rather than rebuilt.
+These probes ran BEFORE aegis/sandbox.py existed, against files that exist,
+so a denial cannot be confused with an absence.
+
+=== CONTROL: unsandboxed, everything is readable ===
+KEYBYTES
+AWSBYTES
+ENVBYTES
+
+=== filesystem: absolute deny paths ===
+  cat: /tmp/asrt-eval2/home/.ssh/id_rsa: Operation not permitted
+  cat: /tmp/asrt-eval2/ws/.env: Operation not permitted
+  plain
+
+=== filesystem: writes are allow-only ===
+  WROTE-INSIDE
+  /bin/bash: /tmp/asrt-eval2/escape.txt: Operation not permitted
+
+=== THE FINDING THAT SHAPED THE TRANSLATION: relative globs are cwd-rooted ===
+  denyRead=["**/id_rsa","**/.env"], cwd=/tmp/asrt-eval2 :
+    cat: /tmp/asrt-eval2/home/.ssh/id_rsa: Operation not permitted
+    cat: /tmp/asrt-eval2/ws/.env: Operation not permitted
+  same profile, cwd=/Users/adarsh/code/aegis :
+    KEYBYTES
+    ENVBYTES
+  ^^ NOT DENIED. A relative glob is rooted at the process cwd, not at /.
+  denyRead=["/**/id_rsa","/**/.env"] anchored, cwd=/Users/adarsh/code/aegis :
+    cat: /tmp/asrt-eval2/home/.ssh/id_rsa: Operation not permitted
+    cat: /tmp/asrt-eval2/ws/.env: Operation not permitted
+  ^^ denied. This is the form aegis/sandbox.py generates.
+
+=== network: allow-only ===
+  example.com -> 200
+  evil.xyz -> 000
+
+=== it fails closed on its own account ===
+    - filesystem.denyWrite: Required
+  Error: Could not load settings from /tmp/asrt-eval2/bad.json (missing, unreadable, or invalid). Refusing to run with the default config.
+  Error: Could not load settings from /tmp/asrt-eval2/nope.json (missing, unreadable, or invalid). Refusing to run with the default config.
+
+=== exit codes pass through ===
+  wanted 42, got 42
+
+DECISION: wrap it. aegis/sandbox.py contains no isolation logic; it
+translates policy.json into the settings document above and refuses to
+launch when this runtime is absent. See S9-REPORT.md §Evaluating ASRT.

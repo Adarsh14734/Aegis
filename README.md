@@ -67,6 +67,31 @@ servers running outside the proxy and fails if it finds one, but that is a
 heuristic — it cannot see inside an already-running client. A green report and
 an unmediated agent look identical from there.
 
+## Confine the whole agent (optional, and the strongest part)
+
+Everything above mediates one MCP pipe. `aegis run` puts the agent's **entire
+process tree** inside an OS sandbox, so Bash, subprocesses, `npm install` and the
+agent's own native file tools are constrained by the kernel:
+
+```bash
+npm install -g @anthropic-ai/sandbox-runtime   # the sandbox Aegis wraps
+aegis run -- claude
+```
+
+Inside, `cat ~/.ssh/id_rsa` fails with `Operation not permitted`, a write outside
+your workspace fails, and `curl` reaches only the domains your policy allows. The
+profile is generated from `policy.json`, so there is one source of truth: a path
+denied in policy is denied by the kernel.
+
+If the sandbox cannot be established — wrong OS, runtime missing, profile
+rejected — `aegis run` **refuses to launch**. It never falls back to running
+unconfined.
+
+Two limits worth knowing before you rely on it: it confines only agents you start
+with `aegis run`, and a kernel escape defeats it entirely
+([THREAT-MODEL.md §7.6 and §7.7](THREAT-MODEL.md)). See [S9](S9-REPORT.md) for
+what else it does not cover.
+
 ## Undo it
 
 ```bash
@@ -85,6 +110,7 @@ to do.
 | Command | What it does |
 |---|---|
 | `aegis proxy -- <server-cmd>` | Run the proxy. This is what `aegis init` writes into your config |
+| `aegis run -- <agent-cmd>` | Launch an agent inside the OS sandbox (needs `srt`; refuses without it) |
 | `aegis-stop "reason"` | Kill switch: deny every tool call, starting with the next one |
 | `aegis-resume` | Release it |
 | `aegis-restore list` / `restore <id>` | Recover files copied aside before a destructive call |
@@ -111,9 +137,13 @@ check a log on a machine whose Aegis you no longer trust.
 Aegis mediates tool calls that cross an MCP stdio pipe it was put in front of.
 Outside that pipe it sees nothing:
 
-- **Bash and every shell command.** An agent that runs `cat ~/.ssh/id_rsa` never
-  touches this proxy.
-- **Native agent file tools** (Read/Write/Edit in Claude Code) — same absence.
+- **Bash and every shell command**, and **native agent file tools**
+  (Read/Write/Edit in Claude Code), *unless* you launch the agent with
+  `aegis run` — that is what C11 is for. Without it, an agent running
+  `cat ~/.ssh/id_rsa` never touches this proxy.
+- **Agents you start yourself.** `aegis run` confines what it launches and
+  nothing else, and nothing detects an agent started another way.
+- **A kernel escape**, which defeats the sandbox and everything above it.
 - **MCP servers not routed through the proxy**, and anything a downstream server
   does on its own. Aegis performs the requests for tools you mark `"egress"`,
   and controls those; it does not intercept requests it did not make.
@@ -132,4 +162,5 @@ reports: [S1](S1-REPORT.md) proxy · [S2](S2-REPORT.md) audit chain ·
 [S3a](S3a-REPORT.md) / [S3b](S3b-REPORT.md) egress and DLP ·
 [S4](S4-REPORT.md) credentials · [S5](S5-REPORT.md) approval, trash, kill
 switch · [S6](S6-REPORT.md) desktop viewer · [S7](S7-REPORT.md) packaging and
-onboarding · [S8](S8-REPORT.md) Aegis makes the request.
+onboarding · [S8](S8-REPORT.md) Aegis makes the request ·
+[S9](S9-REPORT.md) the sandbox.

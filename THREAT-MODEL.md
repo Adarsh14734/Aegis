@@ -121,6 +121,7 @@ Out of scope (see §7), but stated so the boundary is explicit.
 | C8 | Bulk-operation threshold (N files → forced approval) | T1 | S5 | VERIFIED (harness, macOS) — S5-REPORT.md |
 | C9 | Soft delete to recoverable trash | T1 | S5 | VERIFIED (harness, macOS); no delete tool exists on the real FS server — S5-REPORT.md |
 | C10 | Kill switch — denies tool calls at this proxy (does NOT terminate agents or revoke grants) | all | S5 | VERIFIED (harness, macOS) — S5-REPORT.md |
+| C11 | OS sandbox around the agent's whole process tree: `deny_paths` and workspace containment enforced by the kernel, network deny-by-default | T1, T2, T3, T4 | S9 | VERIFIED (harness, macOS) — S9-REPORT.md. Wraps `@anthropic-ai/sandbox-runtime` per D2; **applies only to agents `aegis run` launches** (§7.6) and is defeated by a kernel escape (§7.7) |
 
 **Promotion rule (from RoboCore):** a control moves to VERIFIED only when there is a captured raw transcript of the attack being attempted and blocked, filed in `evidence/`.
 
@@ -133,6 +134,7 @@ The "intent firewall" (an LLM judging whether an action matches user intent) is 
 
 **D2 — Wrap the vendor sandbox; do not rebuild it.**
 Anthropic open-sourced its sandboxing implementation (Seatbelt/bubblewrap). Reimplementing kernel isolation as a solo founder is a multi-month detour with a high chance of producing something weaker. Aegis adds the policy, audit, and egress layers above it.
+*S9 note:* followed literally. `aegis/sandbox.py` contains no isolation logic — it translates policy.json into a settings document for `@anthropic-ai/sandbox-runtime` (`srt`, Apache-2.0), which is the implementation this decision names, and refuses to launch when that runtime is absent. The cost is a Node dependency outside the Python package's reach, which pip cannot install and `aegis doctor` does not check for; the benefit is that the kernel-facing code is not mine. See S9-REPORT.md §Evaluating ASRT.
 
 **D3 — Hostname-based egress filtering is insufficient.**
 Filtering on the client-supplied hostname without inspecting TLS can be defeated by domain fronting. C4 therefore requires terminating TLS with a local CA installed inside the sandbox. This is the hardest engineering in the v0 and should be assumed to take longer than estimated.
@@ -162,8 +164,10 @@ SQLite with WAL, no Postgres, no Redis, no daemon. Fewer moving parts is a secur
 5. **Data already sent to a model provider.** Once bytes leave for inference, provider terms govern them. Aegis controls *what is sent* and *records that it was sent*. It cannot recall it. "Nothing leaves your machine" is a false claim in any cloud-model configuration.
 
 6. **Agents Aegis did not launch or proxy.** An agent started directly by the user, or one that talks to an API without going through the MCP proxy and egress gateway, is entirely outside the boundary. There is no universal interception.
+   *S9 note:* C11 confines the process tree of an agent started with `aegis run`, and nothing else. An agent the user launches themselves — by typing `claude`, by clicking an icon, by any route that does not go through `aegis run` — gets no sandbox, and Aegis cannot tell that this happened. Same shape as S7's stale-client gap: the boundary is real for what it covers and invisible when it is simply not there.
 
 7. **Sandbox escapes and OS-level zero-days.** Aegis inherits the security of Seatbelt/bubblewrap. A kernel escape defeats everything above it.
+   *S9 note:* now load-bearing rather than hypothetical. C11 is the reason `cat ~/.ssh/id_rsa` fails, and C11 is exactly as strong as `sandbox-exec`/`bubblewrap` and the runtime that drives them — no stronger. A Seatbelt bypass returns the agent to its pre-S9 authority over the whole filesystem, and Aegis would neither prevent nor notice it. Aegis adds policy, audit and egress *above* an isolation boundary it did not build and cannot audit; D2 accepts that trade deliberately, and this is where the bill arrives.
 
 8. **Actions taken through an approved channel.** If the user grants Slack send access, the agent can send an embarrassing Slack message. Least privilege limits scope; it does not judge content.
 
