@@ -24,7 +24,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import clients
+from . import clients, launcher
 from .audit import default_db_path
 from .policy import Policy, PolicyError
 from .proxy import default_policy_path
@@ -224,6 +224,94 @@ def _patch_configs(
     return patched
 
 
+def _offer_launch_wrapping(prompt: Prompt, force: bool = False) -> int:
+    """S9c. Offer to route each detected client's launch through `aegis run`.
+
+    A choice, never automatic. Declining leaves exactly the pre-S9c behaviour —
+    the sandbox stays available via `aegis run` and `aegis doctor` keeps saying
+    it is not being used. Making this automatic would mean silently changing
+    what the user's `claude` command does, which is a bigger thing to do to
+    someone's machine than editing a config file.
+    """
+    from . import sandbox as sandbox_mod
+
+    print("\n" + "=" * 60)
+    print("Sandboxing the client itself (optional)")
+    print("=" * 60)
+
+    clients_found = launcher.detect_clients()
+    if not clients_found:
+        print("  No known agent client found on PATH, so there is nothing to wrap.")
+        return 0
+
+    problems = sandbox_mod.preflight()
+    print(
+        "\nAegis can mediate this client's MCP tool calls already. What it "
+        "cannot\ndo, unless the client itself starts inside the sandbox, is "
+        "constrain the\nclient's Bash tool, its native file edits, or anything "
+        "it spawns.\n"
+    )
+    for name, label, real in clients_found:
+        print(f"  {label:<14} {real}")
+    if problems:
+        print(
+            "\n  The sandbox runtime is not installed, so a wrapper would "
+            "refuse to\n  launch anything until it is:\n"
+            f"      {sandbox_mod.RUNTIME_INSTALL_HINT}\n"
+            "  Wrappers can still be written now and will start working then."
+        )
+
+    if not (force or prompt.confirm(
+        "\nRoute these through `aegis run`, so they start sandboxed?", default=False
+    )):
+        print(
+            "  Declined. Nothing changed — the sandbox is still available with\n"
+            "  `aegis run -- <command>`, and `aegis doctor` will keep reporting\n"
+            "  that your client is not covered by it."
+        )
+        return 0
+
+    installed = []
+    for name, label, real in clients_found:
+        path = launcher.wrapper_path(name)
+        existed = path.exists()
+        body = launcher.render_wrapper(name, real)
+        old = path.read_text() if existed else ""
+        if old == body:
+            print(f"\n  {label}: already wrapped, unchanged.")
+            continue
+        import difflib
+        diff = "".join(difflib.unified_diff(
+            old.splitlines(keepends=True), body.splitlines(keepends=True),
+            fromfile=f"{path} (now)", tofile=f"{path} (after aegis init)"))
+        print(f"\n  {label} -> {path}\n")
+        print(diff or "".join(f"    {l}\n" for l in body.splitlines()))
+        if not prompt.confirm(f"  install the {label} wrapper?"):
+            print("    skipped")
+            continue
+        if existed:
+            dest = clients.backup(path, kind="launch_wrapper")
+            print(f"    backed up to {dest}")
+        else:
+            clients.record_created(path, kind="launch_wrapper")
+        launcher.install_wrapper(name, real)
+        installed.append(name)
+        print(f"    installed")
+
+    if installed and not launcher.wrapper_dir_on_path():
+        print(
+            f"\n  ONE MORE STEP — the wrappers are written but not reachable.\n"
+            f"  {launcher.wrapper_dir()} is not on your PATH, so `claude` still\n"
+            f"  resolves to the unwrapped binary. Add this to your shell rc:\n\n"
+            f"      {launcher.path_hint()}\n\n"
+            f"  or use `aegis shell-init`, which prints that line plus a function\n"
+            f"  per client. `aegis doctor` reports whether it actually took effect."
+        )
+    elif installed:
+        print(f"\n  {launcher.wrapper_dir()} is already on PATH, so these take "
+              f"effect in a new shell.")
+    return len(installed)
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="aegis init",
@@ -243,6 +331,14 @@ def main(argv: list[str] | None = None) -> int:
         help="only wrap this MCP server name (repeatable)",
     )
     parser.add_argument("--no-patch", action="store_true", help="write the policy only")
+    parser.add_argument(
+        "--wrap-clients", action="store_true",
+        help="install launch wrappers without asking (S9c; implies consent)",
+    )
+    parser.add_argument(
+        "--no-wrap-clients", action="store_true",
+        help="do not offer launch wrappers at all",
+    )
     parser.add_argument(
         "--yes", action="store_true",
         help="take the defaults and every confirmation without asking",
@@ -342,6 +438,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\n--no-patch: MCP configuration left alone.")
     elif found:
         _patch_configs(found, prompt, args.server)
+
+    # --- 6. S9c: make the sandbox the default rather than an opt-in ------
+    if not args.no_wrap_clients:
+        _offer_launch_wrapping(prompt, force=args.wrap_clients)
 
     print("\n" + "=" * 60)
     print("Next, and do not skip it:\n")

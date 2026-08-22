@@ -6,6 +6,9 @@
 **Revised 2026-08-19 (S9b):** gap 7 closed — kernel denials now reach the audit
 log as `sandbox_denied` rows, and `aegis doctor` reports sandbox status. See
 §S9b.
+**Revised 2026-08-19 (S9c):** gap 2 narrowed — `aegis init` offers to route the
+client's own launch through `aegis run`, so the sandbox is the default rather
+than an opt-in. See §S9c. Suite: **62 passed, 0 failed**.
 **Status:** **VERIFIED (harness, macOS)**. Not unqualified VERIFIED: no live
 Claude Code session has been run inside `aegis run`.
 Suite: **94 passed, 0 failed, 0 NOT RUN**, exit 0. Every prior suite at its
@@ -113,6 +116,10 @@ pinning nothing.
 | `aegis/violations.py` | **S9b.** Reads macOS sandbox violations; `sandbox_denied` rows |
 | `evidence/S9b-violation-observability.txt` | **S9b.** What is and is not observable, measured |
 | `evidence/S9b-suite.txt` | **S9b.** 94 checks plus a regression run |
+| `aegis/launcher.py` | **S9c.** Launch wrappers, the shell shim, and effectiveness |
+| `tests/s9c.py` | **S9c.** 62 checks, including a client genuinely confined by a wrapper |
+| `evidence/S9c-default-sandbox.txt` | **S9c.** Before/after, and the bypass asserted |
+| `evidence/S9c-suite.txt` | **S9c.** 62 checks plus a regression run |
 
 `aegis/policy.py` is **unchanged** — no decision logic touched. S7's `init` and
 `uninstall` are byte-identical. **`doctor` was changed in S9b**, on instruction,
@@ -428,16 +435,146 @@ that Bash and the native tools are named.
 
 ---
 
+## S9c — the sandbox as the default
+
+S9 and S9b left C11 correct and unused. The boundary existed, the denials were
+audited, and a user who installed Aegis and then opened Claude Code the way they
+always had got **none of it**. Doctor said so on every run, which is honest and
+is not protection.
+
+### Two mechanisms, and they are not equally strong
+
+**The wrapper**, offered by `aegis init`. A script in Aegis's own `bin`
+directory, named after the client, that execs `aegis run -- <the real binary>`.
+It applies in every shell, in scripts, and to anything resolving the client
+through PATH.
+
+**The shim**, printed by `aegis shell-init`. A shell function. Strictly weaker —
+it applies only to shells that sourced it — and it exists because it needs no
+PATH surgery.
+
+Both are **advice, not enforcement**, in those words, in the code, in the
+snippet's own comments and in doctor's output.
+
+### Why the wrapper does not live next to the client
+
+On this machine `claude` is `~/.local/bin/claude`. A wrapper called `claude`
+written into that directory **overwrites the user's client**, and uninstall
+would then have to restore a binary Aegis destroyed. Wrappers therefore live in
+`<data dir>/bin`, and effectiveness depends on that directory coming first on
+PATH.
+
+That split is why `effective_status()` **resolves the name through PATH** rather
+than checking a file exists. A wrapper nobody's PATH reaches is a file, not a
+control — the same distinction S7's doctor was built around, and the suite
+asserts both halves: with the directory behind, the wrapper exists and is
+reported as *not* effective, naming PATH as the reason.
+
+### It sandboxes, which is not the same as resolving
+
+`tests/s9c.py` §3 runs a stand-in client that reports whether it can read a
+denied file, and `evidence/S9c-default-sandbox.txt` shows it end to end:
+
+```
+BEFORE   $ claude --resume
+           [client] I CAN read the ssh key
+
+AFTER    $ claude --resume          (wrapper dir on PATH)
+           [client] the ssh key is DENIED to me
+
+BYPASS   $ /full/path/to/claude
+           [client] I CAN read the ssh key
+```
+
+The third line is asserted by the suite, not merely described. A wrapper that
+resolved correctly and did not confine would pass every structural check and be
+worth nothing.
+
+Two details that turned out to matter:
+
+- **`AEGIS_SANDBOXED` prevents nesting.** `aegis run` sets it in the environment
+  it launches; a wrapper or shim that sees it calls the real binary directly.
+  Without it a sandboxed client that shells out to `claude` would apply a second
+  profile to a process the outer sandbox had already confined.
+- **The Aegis invocation is baked in at install time**, not written as
+  `aegis run`. The wrapper already depends on its own directory being early on
+  PATH; depending on `aegis` being there too means a reordered PATH turns the
+  wrapper into "command not found" instead of a sandbox. Caught by the suite,
+  which has no `aegis` console script on PATH at all.
+
+### It is a choice, and declining is a real path
+
+`--yes` answers this offer with **False**. Installing something that changes
+what a user's `claude` command does is a larger thing to do to a machine than
+editing a config file, and it does not happen on a default. Declining prints
+what was not done and leaves the pre-S9c behaviour exactly: the sandbox is still
+there via `aegis run`, and doctor keeps warning.
+
+### Doctor stops warning when — and only when — it is real
+
+A new check reports per client: wrapped, shim present, or neither, with the
+reason. When at least one client resolves to an Aegis wrapper it passes, and the
+sandbox check's standing line changes from
+
+> The sandbox applies ONLY to agents started with `aegis run`…
+
+to
+
+> Your client's launch is routed through `aegis run`, so this applies to it by
+> default. It does not apply to a client started by its full binary path, or one
+> already running.
+
+Being unwrapped is a **WARN, never a FAIL** — opting out is a choice, not a
+broken installation — and the suite asserts that too. A warning that stays up
+after the thing it warns about is fixed is how people learn to skip warnings.
+
+### What remains impossible
+
+Forcing an **already-running** process into a sandbox. On macOS that requires an
+Endpoint Security entitlement, which Apple grants to registered organizations
+and which no `pip install` can supply. Aegis can decide how a process starts; it
+cannot reach into one that already has. A client open when Aegis was set up stays
+unconfined until it is restarted.
+
+THREAT-MODEL.md §7.6 is **narrowed, not removed**: from "any agent you start
+yourself" to direct invocation of the real binary path, a shell that never
+sourced the shim, a GUI launch that does not consult PATH, and processes already
+running.
+
+### Verification
+
+**Tier: VERIFIED (harness, macOS)** — real wrappers, a real PATH, real
+subprocesses, a real sandbox, with the client's confinement proved by a denied
+read rather than by inspecting the wrapper text. Not unqualified VERIFIED: no
+live Claude Code session has been started through a wrapper.
+
+`tests/s9c.py`: **62 passed, 0 failed, 0 NOT RUN**. Everything runs against a
+fake client on a fake PATH in a `labguard`-pinned lab, so the operator's real
+`claude` and real wrapper directory are never touched — checked, and the real
+`<data dir>/bin` does not exist after the run.
+
+**One integration consequence worth naming:** adding a prompt to `aegis init`
+broke S7's pty-driven interactive test, which answers a fixed list of questions
+and hit EOF on the new one. That is the test doing its job — it detected a
+changed prompt sequence — and it now answers the new question with "n", which
+also covers declining interactively. S7 is 141/0.
+
+---
+
 ## Known gaps (do not claim these are handled)
 
 1. **A kernel escape defeats C11 entirely** (§7.7). It is now load-bearing: it is
    the reason `cat ~/.ssh/id_rsa` fails, and it is exactly as strong as
    `sandbox-exec` and the runtime driving it. Aegis would neither prevent nor
    notice a bypass.
-2. **Only agents `aegis run` launches are confined** (§7.6). An agent the user
-   starts themselves gets no sandbox, and **nothing detects that** — not Aegis,
-   not `aegis doctor`. Same shape as S7's stale-client gap, without S7's
-   process-table check.
+2. ~~Only agents `aegis run` launches are confined.~~ **Narrowed in S9c**, not
+   closed. When the user accepts the launch wrapper, typing the client's name
+   sandboxes it. What still escapes: **invoking the real binary path directly**
+   (a wrapper is a PATH entry, and PATH is advice), a shell that never sourced
+   the shim, a GUI launch that does not consult PATH, and **any process already
+   running** — which needs an Endpoint Security entitlement Apple grants to
+   registered organizations and is not an engineering shortfall. Declining the
+   offer leaves the original gap in full, and doctor keeps saying so.
 3. ~~`aegis doctor` says nothing about the sandbox.~~ **Closed in S9b.** Doctor
    reports runtime presence, profile-vs-policy agreement, and that `aegis run`
    is required for any kernel enforcement. It still cannot detect that an agent

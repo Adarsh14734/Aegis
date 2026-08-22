@@ -1,0 +1,146 @@
+Aegis S9c suite — 2026-08-22 12:16:07 IST, macOS 26.5.1, Python 3.14.3
+
+$ python3 tests/s9c.py
+
+lab: /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9c-3pbw7m59
+fake client: /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9c-3pbw7m59/client-bin/claude
+
+==============================================================================
+1. THE WRAPPER DOES NOT OVERWRITE THE USER'S CLIENT
+==============================================================================
+  pass  the client is detected on PATH
+  pass  ...and resolves to the real binary
+  pass  the wrapper goes in Aegis's own directory, not the client's
+  pass  ...which matters, because on this machine the real `claude` lives in ~/.local/bin and a wrapper there would overwrite it
+  pass  the wrapper is written
+  pass  ...and is executable
+  pass  ...and the real client is untouched
+  pass  ...and it is recognisable as ours
+  pass  the wrapper execs the REAL path, so it cannot recurse into itself
+  pass  ...and the Aegis invocation is baked in, not left to PATH
+
+==============================================================================
+2. EXISTING IS NOT THE SAME AS REACHED
+==============================================================================
+  pass  a wrapper that PATH never reaches is NOT reported as effective
+  pass  ...and the reason names PATH as the problem
+  pass  ...while still acknowledging the wrapper exists
+  pass  with the wrapper dir in front, it IS effective
+  pass  ...because the NAME resolves to the wrapper
+  pass  ...and real_binary() still finds the real one, excluding our dir
+
+==============================================================================
+3. THE WRAPPER ACTUALLY SANDBOXES — not just resolves
+==============================================================================
+  pass  CONTROL: run directly, the client CAN read the denied file
+  pass  typing the client's name starts it
+  pass  ...with its arguments passed through
+  pass  ...INSIDE the sandbox: the denied file is now unreadable
+  pass  ...and the sandbox marker is set for anything it spawns
+  pass  a client launched from INSIDE a sandbox is not wrapped again
+  pass  ...which is what stops one sandbox nesting inside another
+  pass  DOCUMENTED BYPASS: the full binary path is NOT sandboxed
+
+==============================================================================
+4. THE SHIM IS ADVICE, AND SAYS SO
+==============================================================================
+    # >>> aegis shell-init >>>
+    # Routes your agent clients through `aegis run` so they start inside
+    # the OS sandbox. ADVICE, NOT ENFORCEMENT: invoking the real binary
+    # path directly bypasses this entirely, and it only applies to shells
+    # that sourced it. `aegis doctor` reports which clients are actually
+    # wrapped when it runs.
+    export PATH="/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9c-3pbw7m59/aegis-bin:$PATH"
+    
+    # Claude Code
+    claude() {
+        if [ -n "$AEGIS_SANDBOXED" ]; then
+            command /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9c-3pbw7m59/client-bin/claude "$@"
+  pass  the shim defines a function for the detected client
+  pass  ...routing it through aegis run
+  pass  ...with the real path baked in, so it cannot recurse
+  pass  ...and it skips wrapping when already sandboxed
+  pass  ...and prepends the wrapper dir to PATH
+  pass  the snippet says plainly it is not enforcement
+  pass  ...and names the bypass
+  pass  `aegis shell-init` prints the snippet to stdout
+  pass  ...and the caveats to stderr, so a `>> ~/.zshrc` stays clean
+  pass  ...naming the entitlement that makes the impossible part impossible
+  pass  sourcing the shim and typing the name sandboxes the client
+
+==============================================================================
+5. `aegis init` OFFERS, AND DECLINING CHANGES NOTHING
+==============================================================================
+  pass  init runs
+  pass  --no-wrap-clients does not even offer
+  pass  ...and installs no wrapper
+  pass  init offers the wrapper
+  pass  ...and explains what it buys
+  pass  declining is the default under --yes
+  pass  ...and nothing is installed
+  pass  ...and the user is told the sandbox is still there manually
+  pass  --wrap-clients installs it
+  pass  ...after showing the file it will write
+  pass  ...and warns when the wrapper dir is not on PATH
+
+==============================================================================
+6. DOCTOR REPORTS WHICH IS ACTIVE, AND STOPS WARNING WHEN WRAPPED
+==============================================================================
+  pass  doctor reports the launch path
+  pass  ...warning while the client is unwrapped
+  pass  ...saying the client starts UNSANDBOXED
+  pass  ...and diagnosing PATH rather than just repeating the advice
+  pass  ...and the sandbox check still says the boundary is opt-in
+  pass  with the wrapper reachable, doctor PASSES the launch check
+  pass  ...and STOPS saying the sandbox only applies to `aegis run`
+  pass  ...saying instead that it applies by default
+  pass  ...while still naming the bypass it cannot close
+  pass  being unwrapped is a WARN, never a FAIL — opting out is a choice
+
+==============================================================================
+7. UNINSTALL REMOVES A WRAPPER IT CREATED
+==============================================================================
+  pass  the wrapper is present before uninstall
+  pass  uninstall runs
+  pass  ...and removes the wrapper Aegis created
+  pass  ...saying it removed rather than restored
+  pass  ...and the real client is still there
+
+==============================================================================
+SUMMARY
+==============================================================================
+  pass  the operator's real Aegis state is untouched
+
+  62 passed, 0 failed, 0 NOT RUN
+
+  lab: /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s9c-3pbw7m59   (delete when done)
+
+  Never established by this suite:
+    - anything about a client that was ALREADY RUNNING. Forcing a running
+      process into a sandbox needs an Endpoint Security entitlement Apple
+      grants to registered organizations; no user-space code can do it
+    - that a user cannot simply type the real binary path. They can, and
+      §3 asserts that bypass rather than hiding it
+    - a live Claude Code session started through a wrapper
+
+
+=== regression, same working tree ===
+tests/tamper.py        exit 0   all cases behaved as specified
+tests/s3a.py           exit 0   99 passed, 0 failed
+tests/s3b.py           exit 0   60 passed, 0 failed
+tests/s4.py            exit 1   67 passed, 0 failed, 2 NOT RUN
+tests/s5.py            exit 1   80 passed, 0 failed, 1 NOT RUN
+tests/s7.py            exit 0   141 passed, 0 failed
+tests/s8.py            exit 0   109 passed, 0 failed
+tests/s9.py            exit 0   94 passed, 0 failed, 0 NOT RUN
+tests/drive.py         exit 0   4 allowed, 23 denied
+tests/approval_budget.py exit 0   
+NOTE ON tests/s3b.py UNDER LOAD. An earlier back-to-back run of this same
+loop reported s3b at 57/3: of its 16 concurrent proxies, one exited 2 and
+12 of 192 rows were not written. That is S3b known gap 4 — 'under heavy
+enough contention a proxy refuses to start… correct, but a denial of
+service on the agent' — showing up when the suite competes with the rest
+of the regression for the same machine. It failed CLOSED (exit 2, no
+unlogged calls), s3b is untouched by S9c, and it passes 60/60 three times
+in isolation. Recorded because a suite whose result depends on machine
+load is a fact about the suite that belongs in the evidence.

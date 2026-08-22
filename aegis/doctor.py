@@ -333,7 +333,67 @@ def _check_keyring(report: Report, policy: Policy | None) -> None:
         )
 
 
-def _check_sandbox(report: Report, policy) -> None:
+def _check_launch(report: Report) -> bool:
+    """S9c. Is the client's own launch actually routed through the sandbox?
+
+    Returns True when at least one detected client resolves to an Aegis wrapper.
+    Resolution, not file existence: a wrapper the user's PATH never reaches is a
+    file, and reporting it as coverage would be the same mistake S7's doctor was
+    built to avoid.
+    """
+    from . import launcher
+
+    clients_found = launcher.detect_clients()
+    if not clients_found:
+        report.add(
+            "Client launches through the sandbox (C11 by default)", SKIP,
+            "no known agent client found on PATH, so there is nothing to route.",
+        )
+        return False
+
+    statuses = [launcher.effective_status(n, l) for n, l, _ in clients_found]
+    wrapped = [s_ for s_ in statuses if s_.effective]
+    shim = launcher.shim_installed()
+
+    lines = [f"{s_.label}: {s_.reason}" for s_ in statuses]
+    if shim:
+        lines.append(f"shell shim present in {shim} (advice only — it applies to "
+                     f"shells that sourced it, and not to a full binary path)")
+
+    if wrapped:
+        report.add(
+            "Client launches through the sandbox (C11 by default)", PASS,
+            *lines,
+            "Started this way, the client and everything it spawns — Bash, "
+            "native file edits, MCP servers, npm install — run inside the "
+            "sandbox.",
+            "Still bypassed by running the real binary path directly, and a "
+            "client already running when this changed is unaffected.",
+        )
+        return True
+
+    fix = [
+        "Run `aegis init` and accept the launch-wrapper offer, or "
+        "`aegis shell-init` for a shell-only version.",
+    ]
+    if any(s_.wrapper_exists for s_ in statuses) and not launcher.wrapper_dir_on_path():
+        fix = [
+            f"A wrapper exists but {launcher.wrapper_dir()} is not on PATH, so "
+            f"it is never reached. Add:",
+            f"    {launcher.path_hint()}",
+        ]
+    report.add(
+        "Client launches through the sandbox (C11 by default)", WARN,
+        *lines,
+        "Your client starts UNSANDBOXED. Aegis still mediates its MCP tool "
+        "calls, but its Bash tool, its native file edits and everything it "
+        "spawns have no kernel boundary.",
+        *fix,
+    )
+    return False
+
+
+def _check_sandbox(report: Report, policy, launch_wrapped: bool = False) -> None:
     """S9b. Report the kernel boundary's status, including that it is opt-in.
 
     The single most misleading thing `doctor` could do is pass on a machine
@@ -353,12 +413,22 @@ def _check_sandbox(report: Report, policy) -> None:
 
     runtime = sandbox_mod.find_runtime()
     problems = sandbox_mod.preflight()
-    always = (
-        "The sandbox applies ONLY to agents started with `aegis run`. An agent "
-        "you launch any other way has no kernel boundary — its Bash, its "
-        "subprocesses and its native file tools are unconstrained, exactly as "
-        "they were before S9."
-    )
+    if launch_wrapped:
+        # S9c: saying "only applies to aegis run" once the launch IS wrapped
+        # would be false, and a warning that is false where it matters is how
+        # people learn to skip the warnings.
+        always = (
+            "Your client's launch is routed through `aegis run`, so this "
+            "applies to it by default. It does not apply to a client started "
+            "by its full binary path, or one already running."
+        )
+    else:
+        always = (
+            "The sandbox applies ONLY to agents started with `aegis run`. An "
+            "agent you launch any other way has no kernel boundary — its Bash, "
+            "its subprocesses and its native file tools are unconstrained, "
+            "exactly as they were before S9."
+        )
 
     if problems:
         report.add(
@@ -923,7 +993,8 @@ def main(argv: list[str] | None = None) -> int:
     db = _check_audit(report)
     _check_keyring(report, policy)
     wired, found = _check_wiring(report, project)
-    _check_sandbox(report, policy)
+    launch_wrapped = _check_launch(report)
+    _check_sandbox(report, policy, launch_wrapped)
 
     # Before the probe, not after: the probe launches its own copy of the
     # configured command, and a check that scans the process table has no

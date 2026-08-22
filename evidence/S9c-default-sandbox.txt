@@ -1,0 +1,93 @@
+Aegis S9c — the sandbox as the default, demonstrated
+2026-08-22 12:06:59 IST, macOS 26.5.1
+
+A stand-in 'claude' that reports whether it can read a denied file.
+lab: /tmp/aegis-s9c-demo.3idpF1
+
+=== BEFORE: typing the client's name — no sandbox ===
+$ claude --resume
+  [client] started with: --resume
+  [client] I CAN read the ssh key
+
+=== aegis init offers to wrap the launch (declining changes nothing) ===
+Sandboxing the client itself (optional)
+============================================================
+
+Aegis can mediate this client's MCP tool calls already. What it cannot
+do, unless the client itself starts inside the sandbox, is constrain the
+client's Bash tool, its native file edits, or anything it spawns.
+
+  Claude Code    /tmp/aegis-s9c-demo.3idpF1/client-bin/claude
+  Declined. Nothing changed — the sandbox is still available with
+  `aegis run -- <command>`, and `aegis doctor` will keep reporting
+  that your client is not covered by it.
+
+============================================================
+Next, and do not skip it:
+
+    aegis doctor
+
+doctor sends a real tool call through the configuration you just wrote
+
+=== accepting: --wrap-clients ===
+Sandboxing the client itself (optional)
+============================================================
+
+Aegis can mediate this client's MCP tool calls already. What it cannot
+do, unless the client itself starts inside the sandbox, is constrain the
+client's Bash tool, its native file edits, or anything it spawns.
+
+  Claude Code    /tmp/aegis-s9c-demo.3idpF1/client-bin/claude
+
+  Claude Code -> /tmp/aegis-s9c-demo.3idpF1/aegis-bin/claude
+
+--- /tmp/aegis-s9c-demo.3idpF1/aegis-bin/claude (now)
++++ /tmp/aegis-s9c-demo.3idpF1/aegis-bin/claude (after aegis init)
+@@ -0,0 +1,16 @@
++#!/bin/sh
++# installed by `aegis init` — remove with `aegis uninstall`
++# Routes claude through `aegis run`, so the client and everything it spawns
++# start inside the OS sandbox (C11). Without this the sandbox applies only to
++# commands you explicitly run with `aegis run`.
++#
++# This is advice, not enforcement: running /tmp/aegis-s9c-demo.3idpF1/client-bin/claude directly bypasses it, and a
++# claude that is already running is not affected.
++
++if [ -n "$AEGIS_SANDBOXED" ]; then
++    # Already inside an Aegis sandbox — nesting a second one would apply this
++    # profile to a process the outer sandbox has already confined.
++    exec /tmp/aegis-s9c-demo.3idpF1/client-bin/claude "$@"
++fi
++
++exec /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m aegis.cli run -- /tmp/aegis-s9c-demo.3idpF1/client-bin/claude "$@"
+
+=== the wrapper it wrote ===
+#!/bin/sh
+# installed by `aegis init` — remove with `aegis uninstall`
+# Routes claude through `aegis run`, so the client and everything it spawns
+# start inside the OS sandbox (C11). Without this the sandbox applies only to
+# commands you explicitly run with `aegis run`.
+#
+# This is advice, not enforcement: running /tmp/aegis-s9c-demo.3idpF1/client-bin/claude directly bypasses it, and a
+# claude that is already running is not affected.
+
+if [ -n "$AEGIS_SANDBOXED" ]; then
+    # Already inside an Aegis sandbox — nesting a second one would apply this
+    # profile to a process the outer sandbox has already confined.
+    exec /tmp/aegis-s9c-demo.3idpF1/client-bin/claude "$@"
+fi
+
+exec /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m aegis.cli run -- /tmp/aegis-s9c-demo.3idpF1/client-bin/claude "$@"
+=== AFTER: same command, with the wrapper dir on PATH ===
+$ claude --resume
+  [client] started with: --resume
+  [client] the ssh key is DENIED to me
+
+=== THE DOCUMENTED BYPASS, asserted rather than hidden ===
+$ /tmp/aegis-s9c-demo.3idpF1/client-bin/claude   # the real path, directly
+  [client] started with: 
+  [client] I CAN read the ssh key
+
+^ not sandboxed. A wrapper is advice, not enforcement. Closing this needs
+  an Endpoint Security entitlement Apple grants to registered
+  organizations; no pip package can supply one. THREAT-MODEL.md §7.6.

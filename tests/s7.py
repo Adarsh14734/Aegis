@@ -412,9 +412,17 @@ def drive_interactive(args, cwd: Path, answers: list[str], timeout=180):
 code, text = drive_interactive(
     ["init"],
     tty_project,
-    [str(tty_project / "workspace"), "", "y", "y", "y"],
+    # S9c appended one more question to init — the launch-wrapper offer. It is
+    # answered "n" here: this section is about the prompt sequence, and s9c
+    # covers accepting. An unanswered prompt is an EOF and a non-zero exit,
+    # which is how this caught the new question in the first place.
+    [str(tty_project / "workspace"), "", "y", "y", "y", "n"],
 )
 check("interactive init exits 0", code == 0, f"exit {code}\n{text[-2000:]}")
+check("...having also offered to sandbox the client's own launch (S9c)",
+      "Sandboxing the client itself" in text, text[-1200:])
+check("...and accepted the decline without changing anything",
+      "Declined" in text, text[-800:])
 check("...asked which folders the agent may work in",
       "Which folders may the agent work in" in text)
 check("...asked which paths it must never open",

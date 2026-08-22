@@ -78,6 +78,11 @@ npm install -g @anthropic-ai/sandbox-runtime   # the sandbox Aegis wraps
 aegis run -- claude
 ```
 
+Better, `aegis init` offers to route your client's own launch through it, so
+typing `claude` starts it sandboxed and everything it spawns inherits that. It
+asks — declining leaves the manual `aegis run` behaviour and `aegis doctor`
+keeps warning. `aegis shell-init` prints a shell-only version.
+
 Inside, `cat ~/.ssh/id_rsa` fails with `Operation not permitted`, a write outside
 your workspace fails, and `curl` reaches only the domains your policy allows. The
 profile is generated from `policy.json`, so there is one source of truth: a path
@@ -87,10 +92,13 @@ If the sandbox cannot be established — wrong OS, runtime missing, profile
 rejected — `aegis run` **refuses to launch**. It never falls back to running
 unconfined.
 
-Two limits worth knowing before you rely on it: it confines only agents you start
-with `aegis run`, and a kernel escape defeats it entirely
-([THREAT-MODEL.md §7.6 and §7.7](THREAT-MODEL.md)). See [S9](S9-REPORT.md) for
-what else it does not cover.
+Limits worth knowing before you rely on it. A wrapper is **advice, not
+enforcement**: it is a PATH entry, so running the real binary's full path
+bypasses it, a shell that never sourced the shim is unaffected, and a client
+**already running** cannot be confined at all — that needs an Endpoint Security
+entitlement Apple grants to registered organizations, which no `pip install` can
+supply. A kernel escape defeats the whole thing
+([THREAT-MODEL.md §7.6 and §7.7](THREAT-MODEL.md)). See [S9](S9-REPORT.md).
 
 ## Undo it
 
@@ -111,6 +119,7 @@ to do.
 |---|---|
 | `aegis proxy -- <server-cmd>` | Run the proxy. This is what `aegis init` writes into your config |
 | `aegis run -- <agent-cmd>` | Launch an agent inside the OS sandbox (needs `srt`; refuses without it) |
+| `aegis shell-init` | Print a shell snippet routing detected clients through the sandbox |
 | `aegis-stop "reason"` | Kill switch: deny every tool call, starting with the next one |
 | `aegis-resume` | Release it |
 | `aegis-restore list` / `restore <id>` | Recover files copied aside before a destructive call |
@@ -141,8 +150,9 @@ Outside that pipe it sees nothing:
   (Read/Write/Edit in Claude Code), *unless* you launch the agent with
   `aegis run` — that is what C11 is for. Without it, an agent running
   `cat ~/.ssh/id_rsa` never touches this proxy.
-- **Agents you start yourself.** `aegis run` confines what it launches and
-  nothing else, and nothing detects an agent started another way.
+- **Agents started outside the wrapped path.** `aegis init` can route your
+  client's launch through the sandbox, but the real binary's full path, an
+  unsourced shell, and any process already running all escape it.
 - **A kernel escape**, which defeats the sandbox and everything above it.
 - **MCP servers not routed through the proxy**, and anything a downstream server
   does on its own. Aegis performs the requests for tools you mark `"egress"`,

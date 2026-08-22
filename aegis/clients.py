@@ -388,6 +388,24 @@ def backup(path: Path, kind: str = "mcp_config") -> Path:
     return dest
 
 
+def record_created(path: Path, kind: str = "mcp_config") -> None:
+    """Note that `path` did not exist before Aegis wrote it.
+
+    Uninstall then removes it rather than restoring, because there is nothing to
+    restore to — and leaving behind a file the user never had is its own small
+    lie about what was changed. Removed in S7 when nothing used it; back in S9c,
+    which creates launch wrappers.
+    """
+    entries = read_manifest()
+    record = entries.setdefault(str(path), {"backups": []})
+    record["kind"] = kind
+    record["backups"].append(
+        {"backup": None, "taken_at": time.strftime("%Y%m%d-%H%M%S"),
+         "sha256": None, "existed": False}
+    )
+    _write_manifest(entries)
+
+
 def write_config(path: Path, text: str) -> None:
     """Atomic replace, mode preserved when the file already existed."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -418,7 +436,10 @@ def latest_backup(path: Path) -> Path | None:
     record = read_manifest().get(str(path))
     if not record or not record.get("backups"):
         return None
-    return Path(record["backups"][-1]["backup"])
+    stored = record["backups"][-1].get("backup")
+    # None means Aegis created the file and there is nothing to restore FROM;
+    # uninstall removes it instead. Returning Path(None) crashed here.
+    return Path(stored) if stored else None
 
 
 def restore(path: Path) -> tuple[bool, str]:
@@ -433,6 +454,12 @@ def restore(path: Path) -> tuple[bool, str]:
         return False, f"no Aegis backup recorded for {path}"
 
     latest = record["backups"][-1]
+    if not latest.get("existed", True):
+        if path.exists():
+            path.unlink()
+            return True, f"removed {path} — Aegis created it; there was no earlier file"
+        return True, f"{path} is already absent, as it was before Aegis ran"
+
     src = Path(latest["backup"])
     if not src.exists():
         return False, f"backup {src} is missing; {path} left untouched"

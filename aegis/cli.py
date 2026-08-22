@@ -5,6 +5,7 @@
     aegis uninstall   put the MCP configuration back
     aegis proxy -- …  run the proxy (what init writes into .mcp.json)
     aegis run -- …    launch an agent inside the OS sandbox (S9, C11)
+    aegis shell-init  print a shell snippet routing your clients through it
     aegis version
 
 `proxy` is here so that a pip install has a stable command to put in a client
@@ -15,6 +16,7 @@ S1 shipped; this file adds no behaviour to it.
 import argparse
 import difflib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +30,7 @@ USAGE = """usage: aegis <command> [options]
   uninstall   restore the MCP configuration Aegis changed
   proxy       run the policy proxy: aegis proxy -- <mcp-server-command>
   run         launch an agent inside the OS sandbox: aegis run -- <agent-command>
+  shell-init  print a shell snippet routing detected clients through the sandbox
   version     print the version
 
 Also installed: aegis-secret, aegis-restore, aegis-stop, aegis-resume.
@@ -48,7 +51,8 @@ def _uninstall(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    targets = clients.backed_up_paths("mcp_config")
+    targets = (clients.backed_up_paths("mcp_config")
+               + clients.backed_up_paths("launch_wrapper"))
     if not targets:
         print("Aegis has no MCP configuration backup recorded.")
         print(f"(manifest: {clients.manifest_path()})")
@@ -58,8 +62,19 @@ def _uninstall(argv: list[str]) -> int:
     for path in targets:
         src = clients.latest_backup(path)
         print(f"\n{path}")
+        # A launch wrapper Aegis created has no backup to restore FROM; the
+        # manifest records that it did not exist, and restore() removes it.
+        if src is None and not path.exists():
+            print("  already absent")
+            continue
+        if src is None:
+            ok, message = clients.restore(path)
+            print(f"  {message}")
+            restored += 1 if ok else 0
+            failures += 0 if ok else 1
+            continue
         print(f"  backup: {src}")
-        if src is None or not src.exists():
+        if not src.exists():
             print("  FAILED: the backup file is gone; leaving the config alone")
             failures += 1
             continue
@@ -100,6 +115,12 @@ def _uninstall(argv: list[str]) -> int:
         "would most want to take."
     )
     return 1 if failures else 0
+
+
+def launcher_marker() -> str:
+    from . import launcher
+
+    return launcher.SANDBOX_MARKER
 
 
 def _run(argv: list[str]) -> int:
@@ -235,8 +256,11 @@ def _run(argv: list[str]) -> int:
 
     wrapped = box.wrap(command)
     code = 3
+    # S9c: tell anything inside that it is already sandboxed, so a launch
+    # wrapper or shell shim it invokes does not nest a second sandbox.
+    child_env = {**os.environ, launcher_marker(): "1"}
     try:
-        child = subprocess.Popen(wrapped)
+        child = subprocess.Popen(wrapped, env=child_env)
         # Drain while the agent runs, so a long session records denials as they
         # happen rather than in a heap at the end. Every audit write stays on
         # this thread; only the log reader is threaded (S5's SQLite lesson).
@@ -263,6 +287,40 @@ def _run(argv: list[str]) -> int:
     return code
 
 
+def _shell_init(argv: list[str]) -> int:
+    """Print the shim. Printing, not installing — the user pastes or sources it.
+
+    `aegis init` writes files after showing a diff and taking a backup. A shell
+    rc is different: it is a file people hand-maintain and reorder, and silently
+    appending to it is a worse citizen than printing something they can read
+    first. `eval "$(aegis shell-init)"` is one line if they want it live now.
+    """
+    from . import launcher
+
+    parser = argparse.ArgumentParser(
+        prog="aegis shell-init",
+        description="Print a shell snippet routing detected agent clients through `aegis run`.",
+    )
+    parser.parse_args(argv)
+
+    found = launcher.detect_clients()
+    print(launcher.shell_snippet(found), end="")
+    print(
+        "\n# ADVICE, NOT ENFORCEMENT. This changes what the NAME `claude` does in\n"
+        "# shells that sourced it. Running the real binary by its full path\n"
+        "# bypasses it completely, and a client already running is unaffected —\n"
+        "# forcing a running process into a sandbox needs an Endpoint Security\n"
+        "# entitlement Apple grants to registered organizations, which no pip\n"
+        "# package can supply. THREAT-MODEL.md §7.6.\n"
+        "#\n"
+        "# To use it now:      eval \"$(aegis shell-init)\"\n"
+        "# To keep it:         aegis shell-init >> ~/.zshrc\n"
+        "# To check it works:  aegis doctor\n",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
@@ -286,6 +344,8 @@ def main(argv: list[str] | None = None) -> int:
         return _uninstall(rest)
     if command == "run":
         return _run(rest)
+    if command == "shell-init":
+        return _shell_init(rest)
     if command == "proxy":
         import asyncio
 
