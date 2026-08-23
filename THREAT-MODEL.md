@@ -38,6 +38,7 @@ Ranked by blast radius if lost.
 | A7 | Aegis's own policy configuration | Compromise it and every other control falls | Unauthorized modification |
 
 **Note on A6/A7:** these are the assets most security products forget. If an attacker can edit the policy file or the log, every other control in this document is decorative.
+*S10 note:* Aegis now writes A7 itself, from a Permissions screen. That is a new path to widening every control at once, and it is gated accordingly: the audit chain must verify before the rules can change, the document is validated by the proxy's own loader rather than a second copy of the rules, widening requires an explicit confirmation naming the grant, the write is atomic at 0600 into the data directory and never a workspace root, and every change is recorded as `policy_edited` with what changed and not the file. What it is **not** is authenticated — anyone who can reach the window can confirm a grant. See S10-REPORT.md.
 
 ---
 
@@ -121,6 +122,7 @@ Out of scope (see §7), but stated so the boundary is explicit.
 | C8 | Bulk-operation threshold (N files → forced approval) | T1 | S5 | VERIFIED (harness, macOS) — S5-REPORT.md |
 | C9 | Soft delete to recoverable trash | T1 | S5 | VERIFIED (harness, macOS); no delete tool exists on the real FS server — S5-REPORT.md |
 | C10 | Kill switch — denies tool calls at this proxy (does NOT terminate agents or revoke grants) | all | S5 | VERIFIED (harness, macOS) — S5-REPORT.md |
+| — | **Policy editor** (S10): the UI can change folder permissions and the deny list. Not a control — a gated write path to A7. Chain-verify, real-loader validation, confirm-on-widening, atomic 0600, `policy_edited` audit | — | S10 | write path VERIFIED (harness, macOS); the window itself compiled but never clicked — S10-REPORT.md |
 | C11 | OS sandbox around the agent's whole process tree: `deny_paths` and workspace containment enforced by the kernel, network deny-by-default | T1, T2, T3, T4 | S9 | VERIFIED (harness, macOS) — S9-REPORT.md. Wraps `@anthropic-ai/sandbox-runtime` per D2. Kernel denials are audited as `sandbox_denied` (S9b). **S9c** routes the client's own launch through it when the user accepts, so it applies by default rather than only to `aegis run`; still bypassed by a direct binary path and by processes already running (§7.6), and defeated by a kernel escape (§7.7) |
 
 **Promotion rule (from RoboCore):** a control moves to VERIFIED only when there is a captured raw transcript of the attack being attempted and blocked, filed in `evidence/`.

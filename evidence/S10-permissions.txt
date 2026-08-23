@@ -1,0 +1,50 @@
+Aegis S10 — changing permissions without editing JSON
+2026-08-22 17:51:31 IST, macOS 26.5.1
+
+Driven through 'aegis policy' — the same seam the Permissions screen
+shells out to, so this exercises what the screen does. lab: /private/tmp/aegis-s10-demo.0lSXei
+
+=== what the screen shows (plain English, no rule_ids) ===
+  [Allow] Can read and change your workspace folder
+  [Deny ] Never open anything matching .env, in any folder
+  [Deny ] Never open anything matching id_rsa, in any folder
+  editable: True
+
+=== granting access WITHOUT confirming — refused ===
+aegis policy: REFUSING: this grants access and has not been confirmed.
+  Robotics: Deny -> Allow (Can read and change your Robotics folder)
+  Confirm the grant explicitly to proceed. Removing access needs no confirmation; adding it does.
+
+=== with the confirmation ===
+[aegis] created audit store /private/tmp/aegis-s10-demo.0lSXei/audit.db (mode 0600)
+  Robotics: Deny -> Allow (Can read and change your Robotics folder)
+
+written to /private/tmp/aegis-s10-demo.0lSXei/policy.json (mode 0600)
+This applies the NEXT time your agent starts. A proxy that is already
+running read the policy once, when it launched, and is still enforcing
+that copy. `aegis doctor` will tell you if one is.
+
+=== a folder set to Ask (Deny -> Ask is also a grant) ===
+  Taxes: Deny -> Ask (Must ask you first before touching your Taxes folder)
+
+
+=== REMOVING access — no confirmation needed ===
+  Robotics: Allow -> Deny (Cannot open your Robotics folder at all)
+
+
+=== what the ENGINE enforces afterwards (not what the UI claims) ===
+  Robotics/arm.py      DENY   folder_rules
+  Taxes/2025.pdf       ASK    folder_rules
+  workspace/ok.txt     ALLOW  tool_rules.read_file
+  workspace/.env       DENY   deny_paths
+
+=== the audit rows: WHAT changed, never the file ===
+id|effect|rule_id|substr(reason,1,86)
+1|ask|policy_edited|granted: Robotics: Deny -> Allow (Can read and change your Robotics folder) (policy po
+2|ask|policy_edited|granted: Taxes: Deny -> Ask (Must ask you first before touching your Taxes folder) (po
+3|allow|policy_edited|changed: Robotics: Allow -> Deny (Cannot open your Robotics folder at all) (policy pol
+
+=== the file itself ===
+  mode -rw-------@
+OK: 3 row(s) verified, chain intact
+db:     /private/tmp/aegis-s10-demo.0lSXei/audit.db

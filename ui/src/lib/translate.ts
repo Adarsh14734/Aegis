@@ -174,13 +174,29 @@ export function approvalWhy(p: PendingApproval): string {
   return "Your rules mark this tool as one to check with you before it runs.";
 }
 
+/** A clock time for today, a date for anything older.
+ *
+ *  This used to return a bare "6:08 pm" for every row. Activity fetches the
+ *  most recent rows by id with NO date filter, so a row from three days ago
+ *  rendered as a time and read as today — while Status, which counts only rows
+ *  since local midnight, correctly said nothing had happened today. The two
+ *  screens appeared to disagree about the same database. Status was right; this
+ *  was the screen dropping the day.
+ */
 export function formatTime(unix: number): string {
   const d = new Date(unix * 1000);
   let h = d.getHours();
   const m = d.getMinutes().toString().padStart(2, "0");
   const ampm = h >= 12 ? "pm" : "am";
   h = h % 12 || 12;
-  return `${h}:${m} ${ampm}`;
+  const clock = `${h}:${m} ${ampm}`;
+  if (d.toDateString() === new Date().toDateString()) return clock;
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${clock}`;
+
+  return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${clock}`;
 }
 
 export function formatSince(unix: number | null): string {

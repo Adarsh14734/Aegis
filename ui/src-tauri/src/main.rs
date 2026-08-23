@@ -5,14 +5,23 @@
 // second one would break the chain's single-writer assumption and, worse,
 // would make a broken chain ambiguous between tampering and a race.
 //
-// There is no command that changes anything. An earlier revision carried a
-// resolve_approval command that forwarded a human's answer to an approval
-// bridge; the bridge was removed rather than shipped unverified (S6-REPORT.md)
-// and the command went with it. Approvals are answered at the proxy's terminal.
+// S10 adds the FIRST commands that change anything: the Permissions screen can
+// edit policy.json. They live in permissions.rs and decide nothing themselves —
+// every gate (chain must verify, the proxy's own loader must accept the
+// document, widening must be confirmed, atomic 0600 write) is in
+// aegis/policyedit.py, where it is tested and where it applies equally to a
+// terminal. audit.db is still opened read-only and audit.py is still its only
+// writer.
+//
+// An earlier revision carried a resolve_approval command that forwarded a
+// human's answer to an approval bridge; the bridge was removed rather than
+// shipped unverified (S6-REPORT.md) and the command went with it. Approvals are
+// answered at the proxy's terminal.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audit;
+mod permissions;
 mod policy;
 
 use serde::Serialize;
@@ -84,7 +93,12 @@ fn snapshot() -> Result<Snapshot, String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![snapshot])
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            permissions::permissions,
+            permissions::set_folder,
+            permissions::set_deny
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Aegis");
 }

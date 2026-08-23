@@ -325,3 +325,46 @@ body {
   font-size: 22px;
   line-height: 1.3;
 }
+
+/* --- S10 Permissions ---------------------------------------------------- */
+/* Tokens only, no new colours: the palette is transcribed from design/ and a
+   screen that invented one would drift from the rest of the app. */
+.perm-list { list-style: none; padding: 0; margin: 0 0 24px; }
+.perm-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 0; border-bottom: 1px solid var(--color-rule);
+}
+.perm-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.perm-sentence { font-size: 14px; }
+.perm-path { font-size: 12px; color: var(--color-muted); overflow-wrap: anywhere; }
+.perm-choices { display: flex; gap: 6px; flex-shrink: 0; }
+.perm-choice {
+  padding: 5px 12px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--color-rule); background: transparent; border-radius: 4px;
+}
+.perm-choice:disabled { opacity: 0.45; cursor: not-allowed; }
+.perm-choice.is-on {
+  background: var(--color-accent-700); color: #fff; border-color: var(--color-accent-700);
+}
+.perm-note { font-size: 14px; margin-top: 12px; }
+/* The confirmation is deliberately loud: it is the only thing standing between
+   a click and a grant. */
+.perm-confirm {
+  margin-top: 20px; padding: 16px; border: 2px solid #8c1c2b; border-radius: 6px;
+}
+.perm-confirm h3 { margin: 0 0 8px; color: #8c1c2b; }
+.perm-grant { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+
+/* An Aegis refusal is the most important thing on the screen when it appears:
+   it is the moment the user finds out their change did not happen. It gets the
+   same deep red the Blocked tag uses and nothing else in the product does. */
+.perm-error {
+  margin-top: 16px; padding: 14px 16px; border: 2px solid #8c1c2b;
+  border-radius: 6px; background: rgba(140, 28, 43, 0.05);
+}
+.perm-error-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.perm-error-head strong { color: #8c1c2b; }
+.perm-error-body {
+  margin: 0 0 10px; font-size: 14px; white-space: pre-wrap;
+  font-variant-numeric: tabular-nums;
+}

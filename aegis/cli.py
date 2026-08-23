@@ -6,6 +6,7 @@
     aegis proxy -- …  run the proxy (what init writes into .mcp.json)
     aegis run -- …    launch an agent inside the OS sandbox (S9, C11)
     aegis shell-init  print a shell snippet routing your clients through it
+    aegis policy      show or change what the agent may touch (S10)
     aegis version
 
 `proxy` is here so that a pip install has a stable command to put in a client
@@ -31,6 +32,7 @@ USAGE = """usage: aegis <command> [options]
   proxy       run the policy proxy: aegis proxy -- <mcp-server-command>
   run         launch an agent inside the OS sandbox: aegis run -- <agent-command>
   shell-init  print a shell snippet routing detected clients through the sandbox
+  policy      show/set folder permissions and the deny list
   version     print the version
 
 Also installed: aegis-secret, aegis-restore, aegis-stop, aegis-resume.
@@ -321,6 +323,81 @@ def _shell_init(argv: list[str]) -> int:
     return 0
 
 
+def _policy(argv: list[str]) -> int:
+    """S10. The seam the Permissions screen drives, usable on its own.
+
+    The UI shells out to this rather than reimplementing the write path, for the
+    same reason S6's UI shells out to verify.py: one implementation, tested where
+    it can be tested. Everything the screen can do is available here, which is
+    also what makes the screen's behaviour verifiable without compiling it.
+    """
+    from . import policyedit
+    from .policy import Effect
+
+    parser = argparse.ArgumentParser(
+        prog="aegis policy",
+        description="Show or change what the agent may touch.",
+    )
+    sub = parser.add_subparsers(dest="action")
+    sub.add_parser("show", help="print the current permissions as JSON")
+    folder = sub.add_parser("set-folder", help="set one folder to allow/ask/deny")
+    folder.add_argument("path")
+    folder.add_argument("effect", choices=[e.value for e in Effect])
+    deny = sub.add_parser("deny-add", help="add a deny-list pattern")
+    deny.add_argument("pattern")
+    undeny = sub.add_parser("deny-remove", help="remove a deny-list pattern (widening)")
+    undeny.add_argument("pattern")
+    for p_ in (folder, deny, undeny):
+        p_.add_argument(
+            "--confirm-grant", action="store_true",
+            help="confirm a change that GRANTS access. Required for widening; "
+                 "removing access never needs it.",
+        )
+        p_.add_argument("--json", action="store_true", help="machine-readable result")
+    args = parser.parse_args(argv)
+
+    if args.action in (None, "show"):
+        try:
+            print(json.dumps(policyedit.snapshot(), indent=2))
+        except policyedit.EditError as exc:
+            print(f"aegis policy: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    try:
+        doc = policyedit.load_doc()
+        if args.action == "set-folder":
+            new_doc, changes = policyedit.plan_folder(doc, args.path, Effect(args.effect))
+        elif args.action == "deny-add":
+            new_doc, changes = policyedit.plan_deny(doc, args.pattern, add=True)
+        else:
+            new_doc, changes = policyedit.plan_deny(doc, args.pattern, add=False)
+        result = policyedit.apply(new_doc, changes, confirm_grant=args.confirm_grant)
+    except policyedit.EditError as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"written": False, "error": str(exc)}))
+        else:
+            print(f"aegis policy: {exc}", file=sys.stderr)
+        return 3
+
+    if getattr(args, "json", False):
+        print(json.dumps(result))
+        return 0
+
+    if not result.get("written"):
+        print(f"nothing to change ({result.get('reason', 'already set that way')})")
+        return 0
+    for line in result["changes"]:
+        print(f"  {line}")
+    print(f"\nwritten to {result['path']} (mode 0600)")
+    print(
+        "This applies the NEXT time your agent starts. A proxy that is already\n"
+        "running read the policy once, when it launched, and is still enforcing\n"
+        "that copy. `aegis doctor` will tell you if one is."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
@@ -346,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run(rest)
     if command == "shell-init":
         return _shell_init(rest)
+    if command == "policy":
+        return _policy(rest)
     if command == "proxy":
         import asyncio
 

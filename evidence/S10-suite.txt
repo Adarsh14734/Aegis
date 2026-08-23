@@ -1,0 +1,164 @@
+Aegis S10 suite — 2026-08-22 17:51:51 IST, macOS 26.5.1, Python 3.14.3
+rust: rustc 1.97.1 (8bab26f4f 2026-07-14)   node: v20.18.1
+
+$ python3 tests/s10.py
+
+[aegis] created audit store /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s10-1ed9ia2p/audit.db (mode 0600)
+lab: /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s10-1ed9ia2p
+
+==============================================================================
+1. PLAIN ENGLISH, NOT rule_ids
+==============================================================================
+  [
+    {
+      "path": "/private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s10-1ed9ia2p/workspace",
+      "name": "workspace",
+      "effect": "allow",
+      "label": "Allow",
+      "sentence": "Can read and change your workspace folder"
+    }
+  ]
+  pass  a folder reads as a sentence about what the agent can do
+  pass  Ask reads as asking you first
+  pass  Deny reads as cannot open at all
+  pass  no policy-schema jargon reaches the screen
+  pass  the deny list is explained, not just listed
+  pass  the screen is told edits apply to the NEXT session
+
+==============================================================================
+2. THE THREE STATES ARE REAL — the engine enforces what the UI offers
+==============================================================================
+  pass  Allow: the engine permits a read there
+  pass  Ask: the engine escalates to a human
+  pass  ...citing the folder rule
+  pass  ...and saying which folder in the reason
+  pass  setting an already-unreachable folder to Deny changes nothing
+  pass  ...and adds no redundant rule to the policy
+  pass  Deny: the engine refuses
+  pass  ...citing the real reason — it is in no allowed root
+  pass  denying a folder that WAS allowed does write a rule
+  pass  ...and the engine cites the folder rule for it
+  pass  a Deny subfolder inside an Allow folder still denies
+  pass  ...without denying its parent
+  pass  deny_paths still beats an Allow folder
+  pass  a policy with no folder_rules behaves exactly as before
+
+==============================================================================
+3. WIDENING NEEDS AN EXPLICIT CONFIRM NAMING THE GRANT
+==============================================================================
+  pass  granting access without confirmation is REFUSED
+  pass  ...and the refusal names what would be granted
+  pass  ...and says a grant needs confirming
+  pass  ...and the policy on disk is unchanged
+  pass  with the confirmation it is written
+  pass  ...and reports what changed in words
+  pass  ...and says it applies next session
+  pass  REMOVING access needs no confirmation
+  pass  ...and the folder is now denied
+  pass  Deny -> Ask is widening and is refused without confirmation
+  pass  ...and permitted with it
+  pass  removing a deny-list entry is widening and refused
+  pass  ...with the consequence spelled out
+  pass  ADDING a deny-list entry needs no confirmation
+
+==============================================================================
+4. THE DOCUMENT IS VALIDATED BY THE PROXY'S OWN LOADER
+==============================================================================
+  pass  a policy the proxy would reject is REFUSED
+  pass  ...saying the proxy would reject it
+  pass  ...quoting the loader's own words
+  pass  ...and nothing was written
+  pass  ...including rules only the real loader knows (S3b egress flag)
+
+==============================================================================
+5. WHERE IT WRITES, AND HOW
+==============================================================================
+  pass  the policy is written at 0600
+  pass  ...and is valid JSON the loader accepts
+  pass  ...with no temp file left behind
+  pass  REFUSES to write the policy inside a workspace root
+  pass  ...explaining the agent could rewrite it
+  pass  ...and no file was created there
+  pass  the data-directory check resolves both sides before comparing
+  pass  REFUSES to write outside the Aegis data directory
+
+==============================================================================
+6. EVERY CHANGE IS AUDITED — what changed, not the file
+==============================================================================
+  5 policy_edited row(s)
+    ask    policy_edited  granted: Robotics: Deny -> Ask (Must ask you first before touching your Robotics folder) (policy
+    allow  policy_edited  changed: Never open anything matching '*.pem', in any folder, whatever else is allowed (policy p
+    ask    policy_edited  granted: Robotics: Deny -> Allow (Can read and change your Robotics folder) (policy policy.json;
+  pass  edits are recorded with rule_id policy_edited
+  pass  ...naming the folder that changed
+  pass  ...and both states, so the change is reconstructable
+  pass  ...marked as a grant when it granted
+  pass  ...and saying it applies to the next session
+  pass  the whole policy is NOT copied into the log
+  pass  the path that changed is in the paths column
+  pass  the chain still verifies with policy_edited rows in it
+
+==============================================================================
+7. A BROKEN CHAIN LOCKS THE EDITOR
+==============================================================================
+  pass  the tampered chain is detected
+  pass  the editor REFUSES to change the rules while the chain is broken
+  pass  ...saying it will not change the rules either
+  pass  ...and the policy is untouched
+  pass  the screen is told it is not editable
+  pass  ...and why, in a sentence
+
+==============================================================================
+8. DOCTOR SEES A RUNNING PROXY THAT HAS NOT PICKED UP THE EDIT
+==============================================================================
+  pass  the last edit is readable from the log
+  pass  ...with an age
+  pass  doctor can see a running proxy and how long it has run
+  pass  with the edit older than the proxy, doctor PASSES
+  pass  with the edit NEWER than the proxy, doctor FAILS
+  pass  ...naming the pid that is still enforcing the old policy
+  pass  ...and telling the user to restart
+  pass  ...explaining why the policy is read once per session
+
+==============================================================================
+SUMMARY
+==============================================================================
+  pass  the operator's real Aegis state is untouched
+
+  70 passed, 0 failed, 0 NOT RUN
+
+  lab: /private/var/folders/xk/t6s6n6vs4tn1hmhzmvm0wtvh0000gn/T/aegis-s10-1ed9ia2p   (delete when done)
+
+  NOT established by this suite:
+    - the Tauri window itself. The Rust half compiles and its commands are
+      thin shells around `aegis policy`, which is what is tested here; no
+      human has clicked the screen
+    - that a user understands the sentences. Wording is asserted for
+      absence of jargon, not for comprehension
+
+
+=== the UI half, which S6 could never build ===
+$ cargo check --offline
+    Checking aegis-ui v0.6.0 (/Users/adarsh/code/aegis/ui/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.39s
+$ npm run build
+dist/assets/devFixture-8T-hlMl0.js    3.76 kB │ gzip:  1.45 kB
+dist/assets/index-Bb_UXTNQ.js       162.41 kB │ gzip: 52.15 kB
+✓ built in 283ms
+$ npm test
+# tests 11
+# pass 11
+# fail 0
+
+=== regression, same working tree ===
+tests/tamper.py        exit 0   all cases behaved as specified
+tests/s3a.py           exit 0   99 passed, 0 failed
+tests/s3b.py           exit 0   60 passed, 0 failed
+tests/s4.py            exit 1   67 passed, 0 failed, 2 NOT RUN
+tests/s5.py            exit 1   80 passed, 0 failed, 1 NOT RUN
+tests/s7.py            exit 0   141 passed, 0 failed
+tests/s8.py            exit 0   109 passed, 0 failed
+tests/s9.py            exit 0   94 passed, 0 failed, 0 NOT RUN
+tests/s9c.py           exit 0   62 passed, 0 failed, 0 NOT RUN
+tests/drive.py         exit 0   4 allowed, 23 denied
+tests/approval_budget.py exit 0   

@@ -186,6 +186,20 @@ def profile_from_policy(policy, deny_all_network: bool = False) -> dict:
         _resolved(policy.source_path),
         _resolved(killswitch.killswitch_path()),
     ]
+
+    # S10: a folder the user set to Deny must be denied at the kernel too. The
+    # MCP layer refuses it via folder_rules; without this the same path would
+    # stay writable to a Bash tool inside the sandbox, and the two layers would
+    # disagree about a rule the user set in the UI.
+    #
+    # `ask` deliberately does NOT deny here. An approval that a human grants has
+    # to be able to proceed, and a kernel rule cannot be asked.
+    for folder, effect in getattr(policy, "folder_rules", ()):
+        if effect.value == "deny":
+            deny_read.append(_resolved(folder))
+            deny_read.append(_resolved(folder) + "/**")
+            deny_write.append(_resolved(folder))
+            deny_write.append(_resolved(folder) + "/**")
     for pattern in policy.deny_paths:
         deny_read.extend(_deny_globs(pattern))
         deny_write.extend(_deny_globs(pattern))

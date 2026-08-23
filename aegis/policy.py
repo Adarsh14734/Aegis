@@ -124,6 +124,7 @@ class Policy:
 
         self.allowed_domains = self._load_allowed_domains(doc)
         self.credentials = self._load_credentials(doc)
+        self.folder_rules = self._load_folder_rules(doc)
 
         rules = doc.get("tool_rules") or {}
         if not isinstance(rules, dict):
@@ -365,6 +366,61 @@ class Policy:
             }
         return out
 
+    @staticmethod
+    def _load_folder_rules(doc: dict) -> tuple:
+        """S10: per-folder allow/ask/deny, so the Permissions UI can offer three
+        states truthfully.
+
+        Absent means the empty tuple, and the empty tuple changes nothing — every
+        policy written before S10 evaluates exactly as it did. That matters more
+        than usual here: this is the first sprint to touch the decision chain
+        since S5, and a default that altered behaviour would silently reinterpret
+        nine sprints of verified policies.
+
+        `deny` here does NOT replace `deny_paths`. deny_paths is checked first and
+        still beats everything, including a folder rule that says allow — a UI
+        that could override the deny list by adding a folder would be a UI that
+        can widen the strongest rule in the file.
+        """
+        raw = doc.get("folder_rules")
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            raise PolicyError("folder_rules must be a list")
+        out = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                raise PolicyError(f"folder_rules entry {entry!r} is not an object")
+            for key in entry:
+                if key not in ("path", "effect"):
+                    raise PolicyError(
+                        f"folder_rules entry has unknown key {key!r}; "
+                        f"only 'path' and 'effect' are understood"
+                    )
+            path = entry.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise PolicyError("folder_rules entry has no 'path' string")
+            effect = entry.get("effect")
+            if effect not in {e.value for e in Effect}:
+                raise PolicyError(
+                    f"folder_rules[{path!r}] has invalid effect {effect!r}; "
+                    f"expected allow, ask or deny"
+                )
+            out.append((Path(path).expanduser().resolve(), Effect(effect)))
+        return tuple(out)
+
+    def folder_rule_for(self, path: Path):
+        """The most specific folder rule covering `path`, or None.
+
+        Longest match wins, so a deny on a subfolder of an allowed folder is
+        reachable — which is the whole point of having them nest.
+        """
+        best = None
+        for folder, effect in self.folder_rules:
+            if _within(path, folder) and (best is None or len(str(folder)) > len(str(best[0]))):
+                best = (folder, effect)
+        return best
+
     def authorize_credentials(self, tool: str, handles, strings) -> str | None:
         """None if every handle in the call may be substituted, else the reason
         it may not. Config only — no secret is read, because this runs while
@@ -560,11 +616,27 @@ class Policy:
         if effect is Effect.DENY:
             return Decision(Effect.DENY, "tool is denied by policy", f"tool_rules.{tool}", tool, shown)
 
-        # 6. Containment. Every path in the call must sit inside an allowed root.
+        # 6. Containment. Every path in the call must sit inside an allowed root,
+        # or be covered by a folder rule that permits it (S10).
         if resolved:
             allowed_roots = self._roots_for(rule)
+            needs_ask: Path | None = None
             for p in resolved:
-                if not any(_within(p, root) for root in allowed_roots):
+                folder = self.folder_rule_for(p)
+                if folder is not None and folder[1] is Effect.DENY:
+                    return Decision(
+                        Effect.DENY,
+                        f"path {p} is inside {folder[0]}, which is set to Deny",
+                        "folder_rules",
+                        tool,
+                        shown,
+                    )
+                if folder is not None and folder[1] is Effect.ASK and needs_ask is None:
+                    needs_ask = folder[0]
+                permitted = any(_within(p, root) for root in allowed_roots) or (
+                    folder is not None and folder[1] in (Effect.ALLOW, Effect.ASK)
+                )
+                if not permitted:
                     return Decision(
                         Effect.DENY,
                         f"path {p} is outside every allowed root for this tool",
@@ -572,6 +644,17 @@ class Policy:
                         tool,
                         shown,
                     )
+            if needs_ask is not None:
+                # Reuses C7 entirely: the prompt, the timeout-to-deny and the
+                # no-tty denial are S5's, unchanged. This only decides that a
+                # human should be asked, never how the asking works.
+                return Decision(
+                    self._ask_or_deny(),
+                    f"path is inside {needs_ask}, which is set to Ask",
+                    "folder_rules",
+                    tool,
+                    shown,
+                )
 
         # 7. Bulk threshold (C8). Placed here, above every path that can return
         # ALLOW, so an allow rule cannot skip it. It sits *below* the deny

@@ -14,6 +14,7 @@ import {
   approvalWhy,
   chainDetailSummary,
   describeFiles,
+  formatTime,
   statusSentence,
   whyBlocked,
 } from "../../.test-build/lib/translate.js";
@@ -120,4 +121,28 @@ test("the chain banner shows the verifier's summary, not its hash dump", () => {
 test("...even if the newlines were flattened to spaces upstream", () => {
   const flat = "FAIL: audit chain broken at row id 3   row_hash mismatch   stored: 023bbe619c80";
   assert.equal(chainDetailSummary(flat), "Audit chain broken at row id 3");
+});
+
+test("formatTime keeps a bare clock for today and dates anything older", () => {
+  const now = new Date();
+  const todayAfternoon = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 14, 5);
+  assert.equal(formatTime(todayAfternoon.getTime() / 1000), "2:05 pm");
+
+  const yesterday = new Date(todayAfternoon);
+  yesterday.setDate(yesterday.getDate() - 1);
+  assert.equal(formatTime(yesterday.getTime() / 1000), "Yesterday 2:05 pm");
+
+  // The regression this test exists for: Activity fetches recent rows by id
+  // with no date filter, so an older row used to render as a bare "2:05 pm"
+  // and read as today — while Status, counting only since local midnight,
+  // correctly reported nothing today. The screens appeared to disagree about
+  // one database.
+  const older = new Date(todayAfternoon);
+  older.setDate(older.getDate() - 5);
+  const rendered = formatTime(older.getTime() / 1000);
+  assert.ok(
+    !/^\d{1,2}:\d{2} (am|pm)$/.test(rendered),
+    `a row from five days ago rendered as a bare time: ${rendered}`,
+  );
+  assert.match(rendered, /2:05 pm$/);
 });

@@ -4,15 +4,17 @@ import { chainDetailSummary, formatSince } from "./lib/translate";
 import { Activity } from "./screens/Activity";
 import { Approvals } from "./screens/Approvals";
 import { DataFlow } from "./screens/DataFlow";
+import { Permissions } from "./screens/Permissions";
 import { Status } from "./screens/Status";
 import type { Snapshot } from "./types";
 
-type ScreenId = "status" | "activity" | "approvals" | "flow";
+type ScreenId = "status" | "activity" | "approvals" | "permissions" | "flow";
 
 const SCREENS: { id: ScreenId; label: string }[] = [
   { id: "status", label: "Status" },
   { id: "activity", label: "Activity" },
   { id: "approvals", label: "Approvals" },
+  { id: "permissions", label: "Permissions" },
   { id: "flow", label: "Data flow" },
 ];
 
@@ -113,6 +115,7 @@ export default function App() {
         {snap && screen === "activity" && <Activity snap={snap} />}
         {snap && screen === "approvals" && <Approvals snap={snap} />}
         {snap && screen === "flow" && <DataFlow snap={snap} />}
+        {screen === "permissions" && <Permissions />}
       </main>
     </div>
   );

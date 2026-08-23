@@ -333,6 +333,107 @@ def _check_keyring(report: Report, policy: Policy | None) -> None:
         )
 
 
+def _proxy_ages() -> list[tuple[int, float, str]]:
+    """[(pid, seconds running, command)] for every Aegis proxy currently up.
+
+    `ps -o etime=` gives elapsed time as [[dd-]hh:]mm:ss. Parsed rather than
+    guessed at, because the whole check turns on comparing it to an edit
+    timestamp.
+    """
+    try:
+        done = subprocess.run(
+            ["ps", "-ww", "-eo", "pid=,etime=,command="],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if done.returncode != 0:
+        return []
+
+    out = []
+    for line in done.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid_s, etime, cmd = parts
+        if "aegis.proxy" not in cmd and "aegis/proxy.py" not in cmd:
+            continue
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        days, _, clock = etime.rpartition("-")
+        bits = [float(b) for b in clock.split(":")]
+        seconds = 0.0
+        for b in bits:
+            seconds = seconds * 60 + b
+        if days:
+            try:
+                seconds += float(days) * 86400
+            except ValueError:
+                pass
+        out.append((pid, seconds, cmd))
+    return out
+
+
+def _check_policy_freshness(report: Report) -> None:
+    """S10. Did someone edit the policy while a proxy was already running?
+
+    `Policy.load()` runs once at proxy startup and the result is cached for the
+    life of the process. So an edit made from the Permissions screen — or by any
+    other means — does not reach a session that is already up. The user is told
+    that at edit time, but "I was told" and "it is currently happening" are
+    different facts, and only this one can be checked.
+
+    The comparison is a proxy's elapsed run time against the age of the newest
+    `policy_edited` row. A proxy older than the edit is enforcing rules that no
+    longer match the file.
+    """
+    from . import policyedit
+
+    edit = policyedit.last_edit()
+    if edit is None:
+        report.add(
+            "Policy edits have reached the running proxy", SKIP,
+            "no policy edit has ever been recorded, so there is nothing that "
+            "could be stale.",
+        )
+        return
+
+    running = _proxy_ages()
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(edit["ts"]))
+    stale = [(pid, age, cmd) for pid, age, cmd in running if age > edit["age_seconds"]]
+
+    if not running:
+        report.add(
+            "Policy edits have reached the running proxy", PASS,
+            f"last edit {when}: {edit['reason'][:100]}",
+            "no proxy is running, so the next one to start reads the current "
+            "policy.",
+        )
+        return
+
+    if stale:
+        report.add(
+            "Policy edits have reached the running proxy", FAIL,
+            f"last edit {when} ({int(edit['age_seconds'])}s ago): "
+            f"{edit['reason'][:100]}",
+            *[f"pid {pid} has been running {int(age)}s — longer than that — so it "
+              f"is still enforcing the policy it read at startup"
+              for pid, age, _ in stale],
+            "Restart your agent. Aegis loads the policy once per session on "
+            "purpose (a policy that could change mid-session is a policy an "
+            "agent could race), and the cost is that an edit needs a restart.",
+        )
+        return
+
+    report.add(
+        "Policy edits have reached the running proxy", PASS,
+        f"last edit {when}: {edit['reason'][:100]}",
+        f"{len(running)} proxy process(es) running, all started since that edit.",
+    )
+
+
 def _check_launch(report: Report) -> bool:
     """S9c. Is the client's own launch actually routed through the sandbox?
 
@@ -993,6 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
     db = _check_audit(report)
     _check_keyring(report, policy)
     wired, found = _check_wiring(report, project)
+    _check_policy_freshness(report)
     launch_wrapped = _check_launch(report)
     _check_sandbox(report, policy, launch_wrapped)
 

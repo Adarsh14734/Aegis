@@ -113,3 +113,44 @@ export function sampleSnapshot(): Snapshot {
     ],
   };
 }
+
+
+/** Browser-harness permissions. Same banner rules as sampleSnapshot: this is
+ *  never reachable from the packaged binary, and the app paints a warning when
+ *  it is in use. It exists to check the layout, not to stand in for policy. */
+export function samplePermissions() {
+  return {
+    policy_path: "/sample/policy.json",
+    folders: [
+      {
+        path: "/Users/sample/Robotics",
+        name: "Robotics",
+        effect: "allow" as const,
+        label: "Allow",
+        sentence: "Can read and change your Robotics folder",
+      },
+      {
+        path: "/Users/sample/Taxes",
+        name: "Taxes",
+        effect: "ask" as const,
+        label: "Ask",
+        sentence: "Must ask you first before touching your Taxes folder",
+      },
+      {
+        path: "/Users/sample/Private",
+        name: "Private",
+        effect: "deny" as const,
+        label: "Deny",
+        sentence: "Cannot open your Private folder at all",
+      },
+    ],
+    deny_paths: [
+      { pattern: ".env", sentence: "Never open anything matching .env, in any folder" },
+      { pattern: "id_rsa", sentence: "Never open anything matching id_rsa, in any folder" },
+    ],
+    editable: true,
+    not_editable_reason: "",
+    applies_note:
+      "Changes apply the NEXT time your agent starts. A proxy that is already running read the policy once, when it launched, and is still enforcing that copy.",
+  };
+}

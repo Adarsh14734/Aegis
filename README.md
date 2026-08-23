@@ -100,6 +100,22 @@ entitlement Apple grants to registered organizations, which no `pip install` can
 supply. A kernel escape defeats the whole thing
 ([THREAT-MODEL.md §7.6 and §7.7](THREAT-MODEL.md)). See [S9](S9-REPORT.md).
 
+## Change what it may touch
+
+```bash
+aegis policy show
+aegis policy set-folder ~/Robotics allow --confirm-grant
+```
+
+The desktop app has a Permissions screen for the same thing — folders reading
+Allow / Ask / Deny, plus the never-open list, in sentences rather than JSON.
+
+Granting access always asks first and names what is being granted; removing it
+never does. Edits are refused outright if the audit chain does not verify, or if
+the proxy would reject the result at startup. **Changes apply the next time your
+agent starts** — a running proxy read the policy once, when it launched, and
+`aegis doctor` tells you if one is still on the old copy.
+
 ## Undo it
 
 ```bash
@@ -120,6 +136,7 @@ to do.
 | `aegis proxy -- <server-cmd>` | Run the proxy. This is what `aegis init` writes into your config |
 | `aegis run -- <agent-cmd>` | Launch an agent inside the OS sandbox (needs `srt`; refuses without it) |
 | `aegis shell-init` | Print a shell snippet routing detected clients through the sandbox |
+| `aegis policy show` / `set-folder` | Show or change what the agent may touch |
 | `aegis-stop "reason"` | Kill switch: deny every tool call, starting with the next one |
 | `aegis-resume` | Release it |
 | `aegis-restore list` / `restore <id>` | Recover files copied aside before a destructive call |
@@ -173,4 +190,4 @@ reports: [S1](S1-REPORT.md) proxy · [S2](S2-REPORT.md) audit chain ·
 [S4](S4-REPORT.md) credentials · [S5](S5-REPORT.md) approval, trash, kill
 switch · [S6](S6-REPORT.md) desktop viewer · [S7](S7-REPORT.md) packaging and
 onboarding · [S8](S8-REPORT.md) Aegis makes the request ·
-[S9](S9-REPORT.md) the sandbox.
+[S9](S9-REPORT.md) the sandbox · [S10](S10-REPORT.md) the Permissions screen.
