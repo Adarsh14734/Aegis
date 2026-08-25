@@ -60,6 +60,11 @@ except ImportError:  # pragma: no cover
 
 VERIFIER = Path(__file__).with_name("verify.py")
 
+# Deliberately a literal rather than `from .verify import VERDICT_PREFIX`:
+# verify.py is standalone and importing it here would make this module the
+# reason it stops being standalone. tests/bundle.py asserts the two agree.
+VERDICT_PREFIX = "AEGIS-VERIFY-VERDICT:"
+
 EFFECT_WORDS = {
     Effect.ALLOW: "Allow",
     Effect.ASK: "Ask",
@@ -251,26 +256,74 @@ def plan_deny(doc: dict, pattern: str, add: bool = True) -> tuple[dict, list[Cha
 # ---------------------------------------------------------------------------
 
 
-def chain_verifies(db: Path | None = None) -> tuple[bool, str]:
-    """(ok, first line of the verifier's output).
+# The three answers the chain check can give. "unchecked" is not a polite way
+# of saying "broken": it means no verdict was reached, and the difference has
+# to survive all the way to the screen. Both still lock the editor — an edit
+# made against a record nobody can vouch for is an edit nobody can reconstruct
+# — but they must not be described with the same words.
+INTACT, BROKEN, UNCHECKED = "intact", "broken", "unchecked"
+
+
+def chain_state(db: Path | None = None) -> tuple[str, str]:
+    """(state, first line of the verifier's output).
 
     Shells out to verify.py rather than importing it: it is the authority (S2),
     it carries its own independent copy of the chain rule on purpose, and a
     second caller reimplementing the check would be a third thing to keep in
     agreement.
+
+    The state comes from verify.py's `--verdict` marker, never from the exit
+    code alone. A crashed verifier exits 1, which is also the code for a broken
+    chain; reading the code would turn "the checker died" into "your log was
+    altered". The marker is printed only after a verdict is reached, so its
+    absence is the honest answer: not checked.
     """
     db = db or default_db_path()
     if not db.exists():
-        return True, "no audit database yet — nothing to verify"
+        return INTACT, "no audit database yet — nothing to verify"
     try:
         done = subprocess.run(
-            [sys.executable, str(VERIFIER), str(db)],
+            [sys.executable, str(VERIFIER), str(db), "--verdict"],
             capture_output=True, text=True, timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"could not run the verifier ({type(exc).__name__}: {exc})"
-    out = (done.stdout + done.stderr).strip().splitlines()
-    return done.returncode == 0, (out[0] if out else "(no output)")
+        return UNCHECKED, f"could not run the verifier ({type(exc).__name__}: {exc})"
+
+    verdict = ""
+    for line in done.stdout.splitlines():
+        if line.startswith(VERDICT_PREFIX):
+            verdict = line[len(VERDICT_PREFIX):].strip()
+
+    out = [l.strip() for l in (done.stderr + "\n" + done.stdout).splitlines()
+           if l.strip() and not l.strip().startswith(VERDICT_PREFIX)]
+    # A traceback's first line says only that there is a traceback; the line
+    # that means something is the last. Never the middle — those are file paths
+    # and line numbers, which is what the reported bug put on screen.
+    if out and out[0].startswith("Traceback (most recent call last)"):
+        first = out[-1]
+    else:
+        first = out[0] if out else "(no output)"
+
+    if verdict == "intact":
+        return INTACT, first
+    if verdict == "broken":
+        return BROKEN, first
+    if verdict == "unreadable":
+        return UNCHECKED, first
+    # No marker at all: the verifier never reached a verdict.
+    return UNCHECKED, (
+        f"The chain checker did not finish (exit {done.returncode}). It reported: "
+        f"{first}"
+    )
+
+
+def chain_verifies(db: Path | None = None) -> tuple[bool, str]:
+    """(ok, detail). Kept for callers that only need the two-way answer.
+
+    Fails closed on `unchecked`: not verified is not the same as verified.
+    """
+    state, detail = chain_state(db)
+    return state == INTACT, detail
 
 
 def assert_writable_location(path: Path, doc: dict) -> None:
@@ -343,14 +396,28 @@ def apply(
         return {"written": False, "reason": "nothing to change", "changes": []}
 
     # 1. the record must be trustworthy before the rules are changed
-    ok, detail = chain_verifies(db)
-    if not ok:
+    #
+    # Both a broken chain and an unchecked one refuse the write — "not verified"
+    # is not "verified" — but they are different facts and get different words.
+    # Telling someone their log was altered when the checker merely failed to
+    # start is a false alarm, and false alarms are how real ones get ignored.
+    state, detail = chain_state(db)
+    if state == BROKEN:
         raise EditError(
             "REFUSING: the audit chain does not verify, so Aegis will not also "
             "change the rules.\n"
             f"  {detail}\n"
             "  An edit made while the record cannot be trusted is an edit nobody "
             "can reconstruct. Investigate the log first — `python3 -m aegis.verify`."
+        )
+    if state == UNCHECKED:
+        raise EditError(
+            "REFUSING: Aegis could not check the audit chain, so it will not "
+            "change the rules either.\n"
+            f"  {detail}\n"
+            "  This is NOT a report that the log was altered — nothing was "
+            "checked. Fix whatever stopped the checker from running, then try "
+            "again: `python3 -m aegis.verify`."
         )
 
     # 2. where it is going
@@ -459,7 +526,8 @@ def snapshot(path: Path | None = None, db: Path | None = None) -> dict:
     """
     path = Path(path) if path is not None else default_policy_path()
     doc = load_doc(path)
-    ok, detail = chain_verifies(db)
+    state, detail = chain_state(db)
+    ok = state == INTACT
 
     # ONE row per folder, carrying its EFFECTIVE state.
     #
@@ -497,9 +565,23 @@ def snapshot(path: Path | None = None, db: Path | None = None) -> dict:
             for p in (doc.get("deny_paths") or [])
         ],
         "editable": ok,
+        # The screen renders these three states differently. It must: a
+        # checker that could not run is not a log that was altered, and the
+        # Permissions screen is where someone decides whether to trust Aegis.
+        "chain_state": state,
+        "chain_detail": detail,
         "not_editable_reason": "" if ok else (
             "The audit chain does not verify, so Aegis will not let the rules be "
             "changed until that is investigated. " + detail
+            if state == BROKEN else
+            # Deliberately does NOT append `detail`: this sentence is what the
+            # Permissions screen prints, and the reported bug was a traceback
+            # printed where an explanation belongs. The detail is carried
+            # separately in `chain_detail` for a screen that wants to show it
+            # somewhere secondary.
+            "Aegis could not check the audit chain, so it will not let the rules "
+            "be changed. Nothing was checked, so this says nothing about whether "
+            "your record is intact."
         ),
         "applies_note": (
             "Changes apply the NEXT time your agent starts. A proxy that is "

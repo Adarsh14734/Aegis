@@ -23,8 +23,6 @@
 //! skip them, because it does not implement them.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct EditResult {
@@ -42,42 +40,28 @@ pub struct EditResult {
     pub reason: Option<String>,
 }
 
-/// Locate the repository root that holds `aegis/`.
-///
-/// Same search-don't-guess approach as audit.rs::find_verifier, and the same
-/// reason: `cargo run`, `tauri dev` and a bundled .app each nest the binary
-/// differently, so any fixed depth is wrong for at least one of them.
-fn find_aegis_root() -> Option<PathBuf> {
-    fn holds(dir: &Path) -> Option<PathBuf> {
-        dir.join("aegis").join("policyedit.py").is_file().then(|| dir.to_path_buf())
-    }
-    if let Ok(home) = std::env::var("AEGIS_HOME") {
-        if let Some(found) = holds(Path::new(&home)) {
-            return Some(found);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(found) = exe.ancestors().find_map(holds) {
-            return Some(found);
-        }
-    }
-    std::env::current_dir().ok().and_then(|cwd| cwd.ancestors().find_map(holds))
-}
-
-fn run_policy_command(args: &[&str]) -> Result<String, String> {
-    let root = find_aegis_root().ok_or_else(|| {
-        "Aegis could not find its own installation, so nothing was changed. \
-         Set AEGIS_HOME to the directory containing aegis/."
-            .to_string()
+fn run_policy_command(app: &tauri::AppHandle, args: &[&str]) -> Result<String, String> {
+    // Shared with the chain verifier: one place decides where the Python side
+    // is, and it covers the installed .app before the dev tree. See locate.rs.
+    let root = crate::locate::find(Some(app)).ok_or_else(|| {
+        format!("{} Nothing was changed.", crate::locate::not_found_message())
     })?;
 
-    let output = Command::new("python3")
+    // Not `python3`: an app launched from Finder has a PATH of
+    // /usr/bin:/bin:/usr/sbin:/sbin, where python3 is the 3.9 Command Line
+    // Tools shim. Aegis needs 3.10, so that interpreter died on an annotation
+    // in cli.py and the Permissions screen showed the traceback. python.rs
+    // picks an interpreter that can actually load the package, or says why not.
+    let python = crate::python::find().map_err(|e| format!("{e} Nothing was changed."))?;
+
+    let output = python
+        .command()
         .arg("-m")
         .arg("aegis.cli")
         .arg("policy")
         .args(args)
-        .current_dir(&root)
-        .env("PYTHONPATH", &root)
+        .current_dir(&root.dir)
+        .env("PYTHONPATH", &root.dir)
         .output()
         .map_err(|e| format!("could not run the Aegis policy editor: {e}"))?;
 
@@ -89,8 +73,8 @@ fn run_policy_command(args: &[&str]) -> Result<String, String> {
 
 /// Everything the Permissions screen shows. Read-only.
 #[tauri::command]
-pub fn permissions() -> Result<serde_json::Value, String> {
-    let out = run_policy_command(&["show"])?;
+pub fn permissions(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let out = run_policy_command(&app, &["show"])?;
     serde_json::from_str(&out).map_err(|e| format!("unreadable permissions: {e}"))
 }
 
@@ -101,23 +85,33 @@ pub fn permissions() -> Result<serde_json::Value, String> {
 /// without it — so a bug in this file's callers fails closed rather than
 /// silently widening.
 #[tauri::command]
-pub fn set_folder(path: String, effect: String, confirm_grant: bool) -> Result<EditResult, String> {
+pub fn set_folder(
+    app: tauri::AppHandle,
+    path: String,
+    effect: String,
+    confirm_grant: bool,
+) -> Result<EditResult, String> {
     let mut args = vec!["set-folder", path.as_str(), effect.as_str(), "--json"];
     if confirm_grant {
         args.push("--confirm-grant");
     }
-    let out = run_policy_command(&args)?;
+    let out = run_policy_command(&app, &args)?;
     serde_json::from_str(&out).map_err(|e| format!("unreadable result: {e}"))
 }
 
 /// Add or remove a deny-list entry. Removing one is widening and needs confirm.
 #[tauri::command]
-pub fn set_deny(pattern: String, blocked: bool, confirm_grant: bool) -> Result<EditResult, String> {
+pub fn set_deny(
+    app: tauri::AppHandle,
+    pattern: String,
+    blocked: bool,
+    confirm_grant: bool,
+) -> Result<EditResult, String> {
     let action = if blocked { "deny-add" } else { "deny-remove" };
     let mut args = vec![action, pattern.as_str(), "--json"];
     if confirm_grant {
         args.push("--confirm-grant");
     }
-    let out = run_policy_command(&args)?;
+    let out = run_policy_command(&app, &args)?;
     serde_json::from_str(&out).map_err(|e| format!("unreadable result: {e}"))
 }

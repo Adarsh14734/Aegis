@@ -22,12 +22,53 @@ pub struct Counters {
     pub blocked_today: i64,
 }
 
+/// The three things the chain check can report, and the reason they are three.
+///
+/// `Broken` means the verifier ran, reached a verdict, and the verdict was that
+/// the log does not hash to itself. `Unchecked` means no verdict was reached at
+/// all — the verifier could not be found, could not start, or died. They used
+/// to collapse into one because the code read `exit != 0`, and CPython exits 1
+/// on an uncaught exception exactly as verify.py exits 1 on a broken chain. So
+/// a crash on the wrong interpreter rendered as "The record of what happened
+/// has been altered."
+///
+/// That is the most damaging bug this program can have. The one screen whose
+/// entire purpose is honest tamper reporting was crying wolf, and an alarm that
+/// fires when nothing is wrong is an alarm that gets ignored when something is.
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChainState {
+    Intact,
+    Broken,
+    Unchecked,
+}
+
 #[derive(Serialize)]
 pub struct ChainStatus {
     pub ok: bool,
+    /// Retained: `checked == false` is exactly `state == Unchecked`. Kept so a
+    /// caller that only asks "was a verdict reached?" cannot get it wrong.
     pub checked: bool,
+    pub state: ChainState,
+    /// What happened, in one sentence.
     pub detail: String,
+    /// What to do about it, when there is something to do. Only ever set for
+    /// `Unchecked`: a broken chain has no one-line remedy and offering one
+    /// would be a lie.
+    pub remedy: Option<String>,
     pub db_path: String,
+}
+
+impl ChainStatus {
+    fn intact(detail: String, db_path: String) -> Self {
+        Self { ok: true, checked: true, state: ChainState::Intact, detail, remedy: None, db_path }
+    }
+    fn broken(detail: String, db_path: String) -> Self {
+        Self { ok: false, checked: true, state: ChainState::Broken, detail, remedy: None, db_path }
+    }
+    fn unchecked(detail: String, remedy: Option<String>, db_path: String) -> Self {
+        Self { ok: false, checked: false, state: ChainState::Unchecked, detail, remedy, db_path }
+    }
 }
 
 #[derive(Serialize)]
@@ -43,6 +84,12 @@ pub struct PendingApproval {
 /// How many rows the Activity screen holds. The window shows a few; this is a
 /// bound on memory, not a retention policy — audit.py keeps everything.
 const RECENT_LIMIT: usize = 300;
+
+/// Must agree with VERDICT_PREFIX in aegis/verify.py. A literal rather than
+/// anything shared, because verify.py imports nothing and is imported by
+/// nothing — that is the property that makes it worth trusting (S0 #4).
+/// tests/bundle.py asserts the two strings match.
+const VERDICT_PREFIX: &str = "AEGIS-VERIFY-VERDICT:";
 
 /// Read-only, and provably so: SQLITE_OPEN_READ_ONLY makes any write attempt
 /// fail at the SQLite layer rather than relying on this code never trying one.
@@ -192,101 +239,147 @@ fn find_pending(conn: &Connection) -> Option<PendingApproval> {
     }
 }
 
-/// Locate `aegis/verify.py`.
-///
-/// The first version guessed a fixed depth above the executable
-/// (`ancestors().nth(4)`), which pointed at `ui/aegis/verify.py` — a path that
-/// does not exist. The verifier lives at the repo root. A fixed depth was
-/// always going to be wrong for at least one of `cargo run`, `tauri dev` and a
-/// bundled .app, since each nests the binary differently.
-///
-/// So: search instead of guess. AEGIS_HOME wins when it actually contains the
-/// verifier — it is an operator override, the same shape as AEGIS_POLICY and
-/// AEGIS_AUDIT_DB elsewhere — and a stale one is ignored rather than silently
-/// used, because "the verifier is missing" and "the verifier is somewhere else"
-/// should not look the same on screen. Otherwise walk up from the executable,
-/// then from the working directory, which is what makes `tauri dev` work.
-fn find_verifier() -> Option<std::path::PathBuf> {
-    fn holds_verifier(dir: &Path) -> Option<std::path::PathBuf> {
-        let candidate = dir.join("aegis").join("verify.py");
-        candidate.is_file().then_some(candidate)
-    }
-    fn walk_up(start: &Path) -> Option<std::path::PathBuf> {
-        start.ancestors().find_map(holds_verifier)
-    }
-
-    if let Ok(home) = std::env::var("AEGIS_HOME") {
-        if let Some(found) = holds_verifier(Path::new(&home)) {
-            return Some(found);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(found) = walk_up(&exe) {
-            return Some(found);
-        }
-    }
-    std::env::current_dir().ok().and_then(|cwd| walk_up(&cwd))
-}
-
 /// Ask aegis/verify.py. The UI deliberately does not reimplement the hash
 /// rule: verify.py is the authority (S2), it already carries an independent
 /// second copy of the rule, and a third would be a third thing to keep in
-/// agreement. If the verifier cannot be run, that is reported as "not
-/// checked" rather than silently treated as intact.
-pub fn verify_chain(db: &Path) -> ChainStatus {
+/// agreement.
+///
+/// What this function must get right is not the hash — it is the difference
+/// between an answer and no answer. Three things can stop the verifier before
+/// it reaches a verdict, and all three used to look like tampering:
+///
+///   * no Python new enough to run it (the reported bug: a Finder-launched app
+///     sees only `/usr/bin/python3`, which is 3.9, and Aegis needs 3.10),
+///   * no Python at all, or a verifier that cannot be found,
+///   * a verifier that started and then died.
+///
+/// So the verdict is read from verify.py's `--verdict` marker, which it prints
+/// only after its check has returned. No marker means no verdict, and no
+/// verdict is reported as `Unchecked` — never as `Broken`.
+pub fn verify_chain(db: &Path, root: Option<&crate::locate::AegisRoot>) -> ChainStatus {
     let db_path = db.display().to_string();
-    let verifier = match find_verifier() {
-        Some(v) => v,
+
+    let verifier = match root {
+        Some(r) => r.verifier(),
         None => {
-            return ChainStatus {
-                ok: false,
-                checked: false,
-                detail: format!(
-                    "The chain verifier (aegis/verify.py) could not be found near {}. \
-                     Set AEGIS_HOME to the Aegis directory.",
-                    std::env::current_exe()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| "this app".into())
-                ),
+            return ChainStatus::unchecked(
+                // Never "assume intact": a viewer that cannot check the chain
+                // must keep saying so.
+                crate::locate::not_found_message(),
+                None,
                 db_path,
-            };
+            );
         }
     };
-    match std::process::Command::new("python3")
+
+    let python = match crate::python::find() {
+        Ok(p) => p,
+        Err(_) => {
+            let search = crate::python::search();
+            return ChainStatus::unchecked(
+                crate::python::not_found_summary(&search.rejected),
+                Some(crate::python::not_found_remedy()),
+                db_path,
+            );
+        }
+    };
+
+    let output = python
+        .command()
         .arg(&verifier)
         .arg(db)
-        .output()
-    {
-        Ok(out) => {
-            let code = out.status.code().unwrap_or(-1);
-            let text = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            match code {
-                0 => ChainStatus {
-                    ok: true,
-                    checked: true,
-                    detail: stdout.lines().next().unwrap_or("Chain intact.").to_string(),
-                    db_path,
-                },
-                1 => ChainStatus {
-                    ok: false,
-                    checked: true,
-                    detail: if text.is_empty() { stdout } else { text },
-                    db_path,
-                },
-                _ => ChainStatus {
-                    ok: false,
-                    checked: false,
-                    detail: format!("The verifier could not read the log: {text}"),
-                    db_path,
-                },
-            }
+        .arg("--verdict")
+        .output();
+
+    let out = match output {
+        Ok(out) => out,
+        Err(e) => {
+            return ChainStatus::unchecked(
+                format!(
+                    "Aegis could not start the chain checker ({} at {}): {e}",
+                    python.version_string(),
+                    python.path.display()
+                ),
+                Some(crate::python::not_found_remedy()),
+                db_path,
+            )
         }
-        Err(e) => ChainStatus {
-            ok: false,
-            checked: false,
-            detail: format!("Could not run the verifier: {e}"),
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let verdict = stdout
+        .lines()
+        .rev()
+        .find_map(|l| l.trim().strip_prefix(VERDICT_PREFIX))
+        .map(|v| v.trim().to_string());
+    let human = |fallback: &str| -> String {
+        let body = stdout
+            .lines()
+            .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with(VERDICT_PREFIX))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !stderr.is_empty() {
+            stderr.clone()
+        } else if !body.is_empty() {
+            body
+        } else {
+            fallback.to_string()
+        }
+    };
+
+    match verdict.as_deref() {
+        Some("intact") => ChainStatus::intact(human("Chain intact."), db_path),
+        Some("broken") => ChainStatus::broken(human("The audit chain does not verify."), db_path),
+        Some("unreadable") => ChainStatus::unchecked(
+            format!("The chain checker could not read the log: {}", human("no detail given")),
+            None,
             db_path,
-        },
+        ),
+        // No marker, or one this build does not recognise. The checker never
+        // reached a verdict, and the exit code cannot tell us more than that:
+        // 1 is equally "chain broken" and "died with a traceback". Report the
+        // only thing that is true — nothing was checked — and show what it did
+        // print, because that is the whole clue to why.
+        _ => ChainStatus::unchecked(
+            format!(
+                "The chain checker did not finish (exit {}). Nothing was checked, \
+                 so this says nothing about your log.",
+                out.status.code().unwrap_or(-1)
+            ),
+            // The machine's own words go HERE, not in the sentence above. A
+            // traceback is not a message: the reported bug put one where the
+            // explanation belongs, and a person reading it learned nothing they
+            // could act on. It is still worth showing — it is the only clue to
+            // why — so it goes in the secondary line, quoted, next to the
+            // command that reproduces the whole thing.
+            Some(format!(
+                "It reported: {}. Aegis ran Python {} at {}. To see all of it: \
+                 {} {} {}",
+                first_useful_line(&stderr, &stdout),
+                python.version_string(),
+                python.path.display(),
+                python.path.display(),
+                verifier.display(),
+                db.display()
+            )),
+            db_path,
+        ),
     }
+}
+
+/// The first line worth showing a person out of a crash. A Python traceback
+/// starts with "Traceback (most recent call last):" and the sentence that
+/// matters is the last line; anything else reads better from the top.
+fn first_useful_line(stderr: &str, stdout: &str) -> String {
+    let text = if stderr.trim().is_empty() { stdout } else { stderr };
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        return "It printed nothing.".to_string();
+    }
+    if lines[0].starts_with("Traceback (most recent call last)") {
+        return (*lines.last().unwrap()).to_string();
+    }
+    lines[0].to_string()
 }

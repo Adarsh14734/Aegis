@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=1000, initial-scale=1" />
+    <!-- device-width, not a hard-coded pixel count. A fixed viewport
+         width pins the layout to one page size no matter how large the
+         window is, which is half of why the zoom button appeared to do
+         nothing. The other half was .window in styles.css. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Aegis</title>
   </head>
   <body>

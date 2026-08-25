@@ -16,9 +16,19 @@ production use, and must not be described that way.
 
 ## Install
 
+Aegis needs **Python 3.10 or newer**. On macOS, `/usr/bin/python3` is the
+Command Line Tools shim and is 3.9 — new enough for many things and not for
+this. Anything older is refused with a sentence saying so, never a traceback.
+
 ```bash
 pip install aegis-mcp
 ```
+
+The desktop app finds its own interpreter: it probes `python3`, `python3.10`
+through `python3.14`, Homebrew, `/Library/Frameworks/Python.framework` and
+pyenv, and uses the first that meets the minimum — because an app launched from
+the Dock inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and would otherwise find
+only the 3.9 shim. Set `AEGIS_PYTHON` to a full path to override the choice.
 
 Credential storage is optional and off by default:
 

@@ -23,7 +23,11 @@ const at = (h: number, m: number) => {
 export function sampleSnapshot(): Snapshot {
   return {
     sample_data: true,
-    chain: { ok: true, checked: true, detail: "OK: 41 row(s) verified, chain intact", db_path: "(sample)" },
+    chain: {
+      ok: true, checked: true, state: "intact",
+      detail: "OK: 41 row(s) verified, chain intact",
+      remedy: null, db_path: "(sample)",
+    },
     counters: { actions_today: 128, waiting: 1, blocked_today: 2 },
     policy: {
       tools: ["read_file", "write_file", "edit_file", "move_file", "fetch", "delete_file"],

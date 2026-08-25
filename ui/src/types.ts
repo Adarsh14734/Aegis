@@ -31,13 +31,27 @@ export interface PolicyView {
   error: string | null;
 }
 
+/** The three answers the chain check can give.
+ *
+ *  `broken` means the verifier ran and said the log does not hash to itself.
+ *  `unchecked` means no verdict was reached — the verifier could not be found,
+ *  could not start, or died. These are different facts about different things
+ *  and the screen must never render one as the other: a crashed verifier shown
+ *  as "your record was altered" is a false alarm on the one surface whose whole
+ *  job is honest tamper reporting. */
+export type ChainState = "intact" | "broken" | "unchecked";
+
 /** Result of shelling out to aegis/verify.py. The UI never recomputes the
  *  chain itself: verify.py is the authority, and a second implementation of
  *  the hash rule is a second thing to get wrong. */
 export interface ChainStatus {
   ok: boolean;
-  checked: boolean; // false if the verifier could not be run at all
+  checked: boolean; // false if no verdict was reached — same as state === "unchecked"
+  state: ChainState;
   detail: string;
+  /** What to do about it. Only ever set when nothing could be checked; a
+   *  broken chain has no one-line fix and offering one would be a lie. */
+  remedy?: string | null;
   db_path: string;
 }
 

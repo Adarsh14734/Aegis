@@ -12,7 +12,7 @@
  *  implement the rules it would have to bypass.
  */
 
-import type { Snapshot } from "./types";
+import type { ChainState, Snapshot } from "./types";
 
 export type PermissionFolder = {
   path: string;
@@ -28,6 +28,11 @@ export type Permissions = {
   deny_paths: { pattern: string; sentence: string }[];
   editable: boolean;
   not_editable_reason: string;
+  /** Why the screen is locked, as a state rather than as prose. The screen
+   *  words "the checker could not run" and "your log was altered" differently,
+   *  and it must not have to pattern-match a sentence to tell them apart. */
+  chain_state?: ChainState;
+  chain_detail?: string;
   applies_note: string;
 };
 

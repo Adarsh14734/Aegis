@@ -69,10 +69,22 @@ export function Permissions() {
   }, []);
 
   if (error) {
+    // This is where the reported traceback landed. `aegis policy show` failing
+    // is a failure to READ, and it used to be painted in the same red the
+    // tamper states use, under no heading at all — so an interpreter that
+    // could not import a module looked like a security event. It is not one:
+    // nothing was read, nothing was changed, and the screen says exactly that.
     return (
       <section className="screen">
         <h1>Permissions</h1>
-        <p className="chain-broken">{error}</p>
+        <div className="banner banner-caution" role="status">
+          <strong>Aegis could not read your rules.</strong>
+          <div style={{ marginTop: 6 }}>{error}</div>
+          <div style={{ marginTop: 8 }} className="banner-remedy">
+            Nothing was changed. Your rules are still whatever they were — this
+            window could not open them to show you.
+          </div>
+        </div>
       </section>
     );
   }
@@ -149,8 +161,13 @@ export function Permissions() {
     <section className="screen">
       <h1>Permissions</h1>
 
+      {/* Locked either way — an edit made against a record nobody can vouch
+          for is an edit nobody can reconstruct — but worded and coloured by
+          WHY. "The chain does not verify" and "the chain could not be checked"
+          are different facts, and only the first one is an accusation.
+          policyedit.py decides which; this only renders it. */}
       {locked && (
-        <p className="chain-broken">
+        <p className={data.chain_state === "broken" ? "chain-broken" : "chain-unchecked"}>
           These controls are switched off. {data.not_editable_reason}
         </p>
       )}

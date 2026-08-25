@@ -433,3 +433,366 @@ The UI half, as far as it goes:
 ```bash
 cd ui && npm run build && npm test && (cd src-tauri && cargo check)
 ```
+
+---
+
+# S10b — the built app was broken for every user but me
+
+Reported after installing the `.dmg`:
+
+> the UI shows "Aegis could not check its own record — the chain verifier
+> (aegis/verify.py) could not be found near
+> /Applications/Aegis.app/Contents/MacOS/aegis-ui", and Permissions refuses
+> every edit with "Aegis could not find its own installation".
+
+Both symptoms, one cause. S6's `find_verifier` and S10's `find_aegis_root` each
+walked **up** from the executable looking for `aegis/verify.py`. In the
+development tree that works on the first try — the repository is three
+directories above `target/release`. In `/Applications/Aegis.app` there is
+nothing above the binary but `/Applications`, and the walk ends at `/`.
+
+So the shipped app could not verify its own chain and could not edit policy.
+Twelve sprints of green suites never saw it, because every suite ran from the
+repository. This is the same failure as S10's single-workspace-root bug: **the
+shape reality produces was missing from the fixtures.** The bug was not in the
+logic; the logic was never shown the input that matters.
+
+## The fix: one locator, and no assume-fine branch
+
+`ui/src-tauri/src/locate.rs` is now the only place that answers "where is the
+Python half?", used by both the chain verifier and the policy editor. It tries,
+in order:
+
+| # | Where | For whom |
+|---|-------|----------|
+| 1 | `$AEGIS_HOME` | operators and tests that need to override |
+| 2 | Tauri `resource_dir()` | **the installed app** — `Contents/Resources/aegis` |
+| 3 | exe-relative `../Resources` | the same, without an `AppHandle` (`--locate`) |
+| 4 | `python3 -c "import aegis"` | someone who `pip install`ed `aegis-mcp` |
+| 5 | walk up from the exe, then cwd | the development tree |
+
+There is deliberately no sixth step. The doc comment says so in those words.
+When all five fail, both callers say they could not find it and name every
+place they looked — the chain screen keeps reporting that it cannot check, and
+Permissions refuses the edit with "Nothing was changed."
+
+That refusal is not a leftover. A viewer that answers "assume intact" when it
+cannot run the verifier turns a broken install into a green screen, which is
+strictly worse than the bug being fixed: the failure that matters most is the
+one where the verifier is missing *because someone removed it*.
+
+The app is now self-contained. `tauri.conf.json` declares
+`"resources": {"../../aegis": "aegis"}`, so the Python package ships inside the
+bundle and step 2 answers for every normal install. Step 4 remains for the
+`pip install aegis-mcp` case, and when both are present **the bundle wins** —
+an app runs the Python it was built against, not whatever happens to be on the
+system.
+
+## Dock icon and window controls
+
+Two smaller breakages in the same artifact:
+
+- **No Dock icon.** `icon.icns` was 12,673 bytes containing a single `is32`
+  entry — 16×16, the menu-bar size. The Dock has nothing to draw at 128px and
+  falls back to a blank document. Rebuilt from the 512×512 source through
+  `sips` + `iconutil`; the file now carries `ic07 ic08 ic09 ic10 ic11–ic14` and
+  is 37,232 bytes. `LSUIElement` was correctly absent throughout — that was not
+  the cause.
+- **No minimize or maximize.** `tauri.conf.json` had `resizable: false,
+  maximizable: false`. macOS greys the zoom button out on a non-resizable
+  window regardless of the maximizable flag, so both had to change. Now
+  `resizable/minimizable/maximizable/closable: true` with
+  `minWidth: 900, minHeight: 620`, which is the width the Activity table and
+  Permissions rows were drawn against.
+
+## The test that would have caught it
+
+`tests/bundle.py` — 40 checks, and the first suite in this project that runs
+the **artifact** rather than the tree.
+
+The decisive move is in §2: it copies the built `Aegis.app` out of the
+repository into the temp lab, then asserts *no parent directory contains
+`aegis/verify.py`*. Under the old locator that copy is unresolvable — which is
+exactly the reported bug, reproduced as a fixture. Then it runs the shipped
+binary's new `--locate` flag from `cwd=/` with `AEGIS_HOME` and `PYTHONPATH`
+stripped, and requires `source == "bundled with the app"`. Finding the file is
+not enough; it has to be found *from the bundle*, or the dev tree answered and
+the test proves nothing.
+
+| § | What it establishes |
+|---|---------------------|
+| 1 | the bundle carries `verify.py`, `cli.py`, `policyedit.py`, `policy.py`, `audit.py`, and no `__pycache__` |
+| 2 | moved outside the repo, with no `aegis/` in any parent, the binary still resolves — from its own bundle |
+| 3 | with `Contents/Resources/aegis` deleted it reports **not found**, names where it looked, and says how to fix it |
+| 4 | the `pip install` fallback works, and the bundle takes precedence over it |
+| 5 | the bundled `verify.py` verifies a real chain; the bundled package runs `policy show`; a tampered chain still locks the editor |
+| 6 | the icns has the Dock sizes, no `LSUIElement`, and the window flags are set |
+| 7 | the `.dmg` is mounted read-only and the binary **inside the installer** is asked the same question |
+
+§7 exists because "the built .dmg is broken" was the report, and the `.app` in
+`target/` is not the file anyone downloads.
+
+`--locate` was added to `main.rs` for this: with the flag the binary prints its
+locator result as JSON and exits without opening a window, so the shipped
+executable is testable headlessly. It is the only way to test the real thing —
+anything else tests a re-implementation of the lookup, which is the code path
+that was already wrong.
+
+## Verification
+
+**VERIFIED (harness, macOS).** `python3 tests/bundle.py` — 40 passed, 0 failed,
+0 NOT RUN, against the built `Aegis.app` and the built `Aegis_0.6.0_aarch64.dmg`.
+
+Full regression, unchanged by this work:
+
+| suite | result |
+|-------|--------|
+| tamper | all cases as specified |
+| s3a | 99 / 0 |
+| s3b | 60 / 0 |
+| s4 | 67 / 0, 2 NOT RUN (real keyring — pre-existing) |
+| s5 | 80 / 0, 1 NOT RUN (live terminal approval — pre-existing) |
+| s7 | 141 / 0 |
+| s8 | 109 / 0 |
+| s9 | 94 / 0 |
+| s9c | 62 / 0 |
+| s10 | 86 / 0 |
+| drive, approval_budget | pass |
+| `npm test` | 12 / 0 |
+| `npm run build`, `cargo check` | clean |
+
+Operator state untouched: the real chain verifies at 103 rows, head
+`8dae12a2…`, the same rows the S10 clicking session left behind. `labguard`
+raised nothing in any suite, including the new one.
+
+## What S10b does NOT establish
+
+- **That the window renders.** `--locate` asks the binary where it would look
+  and runs the Python it finds. It does not open a window, and no automated
+  check in this project clicks the built app. The three S10 bugs were found by
+  hand for that reason and the reason still stands.
+- **Code signing or notarisation.** This build does neither. Gatekeeper will
+  still quarantine the `.dmg` on another machine.
+- **That step 4 finds a genuinely `pip install`ed package.** §4 simulates it
+  with `PYTHONPATH`, which is what an install looks like to `import aegis` but
+  is not the same as one.
+- **Any Linux or Windows bundle.** The resource layout differs and none was
+  built or tested.
+
+## The installed copy
+
+`/Applications/Aegis.app` is, as of this build, byte-identical to the fixed
+bundle (`diff -rq` reports no differences anywhere in it) and answers
+`--locate` with `source: "bundled with the app"`. I cannot account precisely
+for when it was replaced during this session, so verify rather than take my
+word for it:
+
+```bash
+(cd / && env -u AEGIS_HOME -u PYTHONPATH /Applications/Aegis.app/Contents/MacOS/aegis-ui --locate)
+```
+
+`"found": true` with `"source": "bundled with the app"` means the installed app
+is the fixed one. Anything else means reinstall from
+`ui/src-tauri/target/release/bundle/dmg/Aegis_0.6.0_aarch64.dmg`.
+
+Nothing in `~/Library/Application Support/Aegis` needs to change. The chain
+there verifies at 103 rows, head `8dae12a2…`, and is what the app reads.
+
+```bash
+python3 tests/bundle.py
+```
+
+---
+
+# S10c — the installed app ran the wrong Python, and cried wolf about it
+
+Three defects reported against `/Applications/Aegis.app` after the S10b
+locator fix landed (`--locate` now correctly says `"source":"bundled with the
+app"`). They are unrelated to each other except in one way, which is the only
+interesting thing about them: **all three were invisible to a suite that had
+121 assertions about this exact artifact.** Each one was a property nobody had
+thought to ask about, sitting next to a property everybody had.
+
+## 1. The wrong interpreter, and a false tamper alarm
+
+### What was seen
+
+```
+File "/Applications/Aegis.app/Contents/Resources/aegis/cli.py", line 401
+TypeError: unsupported operand type(s) for |: 'types.GenericAlias' and 'NoneType'
+  — raised from /Library/Developer/CommandLineTools/.../python3.9
+```
+
+and, on the Status screen, from the same crash in `verify.py`:
+
+> **The record of what happened has been altered.**
+
+### Why it happened
+
+Every call site said `Command::new("python3")`. An app launched from Finder
+inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — nothing else — and on macOS
+`/usr/bin/python3` is the Command Line Tools shim, which is **Python 3.9**.
+`pyproject.toml` has said `requires-python = ">=3.10"` since the first commit,
+so the window ran the one interpreter on the machine that cannot load the
+package it ships with. `cli.py:401` is `def main(argv: list[str] | None = None)`
+— valid *syntax* on 3.9, a `TypeError` the instant the `def` is evaluated.
+
+A developer never sees this. A terminal-launched build inherits the shell's
+PATH, where `python3` is whatever they installed. **Same shape as S10b: the
+environment reality produces was the one the tests never had.**
+
+The second half is worse. `verify.py` exits 1 for a broken chain. CPython also
+exits 1 for an uncaught exception. `audit.rs` read the exit code:
+
+```rust
+1 => ChainStatus { ok: false, checked: true, detail: ... },   // "tampered"
+```
+
+So a verifier that *died* and a verifier that *found tampering* were the same
+value. A wrong interpreter painted the tamper alarm on the one screen whose
+entire purpose is honest tamper reporting. An alarm that fires when nothing is
+wrong is an alarm that gets ignored when something is.
+
+### The fix
+
+**`ui/src-tauri/src/python.rs`** — a new locator, the same three rules as
+`locate.rs`:
+
+1. **Ask, never guess.** The version comes from running the interpreter and
+   reading `sys.version_info`, not from its filename.
+2. **No "probably fine" fallback.** If nothing qualifies it returns a sentence
+   naming the version required, the newest version actually installed, and what
+   to do. It never returns the newest thing it found and hopes.
+3. **Probe once.** Status polls every two seconds; the answer is cached.
+
+Candidates, in order: `AEGIS_PYTHON`; `python3` then `python3.14`…`python3.10`
+on PATH; then the absolute locations a Finder-launched app cannot reach through
+PATH — Homebrew, `/Library/Frameworks/Python.framework`, pyenv, `/usr/bin`.
+`AEGIS_PYTHON_DIRS` replaces that last list; it can only ever *narrow* the
+search, because the version gate applies to whatever it finds.
+
+**The verdict marker.** `verify.py --verdict` prints one machine-readable last
+line, `AEGIS-VERIFY-VERDICT: intact|broken|unreadable`, **only after its check
+has returned**. No import error, syntax error, missing module, wrong
+interpreter or exception anywhere in the check can produce one, so its absence
+is positive evidence that no verdict was reached. `audit.rs` and
+`policyedit.py` both read the marker and never the exit code.
+
+`ChainStatus` therefore has three states, not two:
+
+| state | means | screen |
+|---|---|---|
+| `intact` | a verdict was reached and it was good | no banner |
+| `broken` | a verdict was reached and the log does not hash to itself | red alarm, "the record has been altered", rows marked untrustworthy |
+| `unchecked` | **no verdict was reached** | neutral caution, "Aegis could not check its own record", plus what to do |
+
+`unchecked` does not claim the log is fine — a viewer that cannot check the
+chain keeps saying it cannot check the chain, which is the S6 rule. It simply
+does not accuse.
+
+**And the words.** `not_editable_reason` and the banner detail carry no
+traceback and no exception class. The machine's own output is still shown —
+it is the only clue to why — but in the secondary line, quoted, next to the
+command that reproduces it. A traceback is not a message.
+
+**Belt and braces on the Python side.** `aegis/__init__.py` and `verify.py`
+each check `sys.version_info` before any 3.10 annotation is evaluated, and exit
+2 with a sentence. `verify.py` carries its own copy because it imports nothing
+from Aegis (S0 open question #4) and that rule is worth the duplication. Four
+statements of the minimum in three languages; `tests/bundle.py` asserts they
+agree.
+
+## 2. Zoom did not maximize
+
+Two constraints have to be right and only one of them is in
+`tauri.conf.json`.
+
+The config was already correct after S10b (`resizable: true`,
+`maximizable: true`, no `maxWidth`/`maxHeight` — macOS greys the zoom button
+out on the first and caps the zoomed size on the second). Measured directly
+against AppKit with the same style mask and minimum size, `zoom(nil)` fills the
+screen.
+
+The bug was the page. `.window` was a hard `width: 1000px; height: 700px`,
+written when the window was `resizable: false` and could only ever be that
+size, and `index.html` pinned the viewport to `width=1000`. The window became
+resizable and the layout did not. So the frame grew and the app stayed a
+1000×700 panel in the corner with dead background around it — which from
+outside is exactly what "the green button only slightly enlarges the window"
+looks like.
+
+`.window` now fills; `.main` scrolls inside it and caps its reading column at
+960px so a maximized window does not produce 1400px lines. Verified in the
+built bundle's own assets at 1470×857 and at the 900×620 minimum: shell fills
+the viewport, no horizontal overflow, layout intact.
+
+## 3. The blank Dock icon
+
+`icon.icns` was regenerated and the Dock still showed nothing. The icns was
+never the problem. It was a faithful, well-formed, ten-entry icns of a picture
+with **nothing in it**: every pixel of `icon.png`, at every size, was the single
+colour `#1a2a3a`. One distinct RGBA value in 1,048,576 pixels. A flat dark tile
+— invisible on a dark Dock, a blank square on a light one.
+
+Every existing check passed on it, because every existing check asked about the
+container: does it have the large sizes, is it bigger than the broken one, does
+`Info.plist` name it. None asked whether it was a picture.
+
+`ui/src-tauri/icons/generate.py` now draws the artwork — a shield in the app's
+own palette, on the rounded plate with the margin macOS icons have — from a
+description that can be read and reviewed, rather than a binary that has to be
+trusted. Stdlib only; `iconutil` assembles the `.icns`, so the container format
+is the platform's own. It regenerates every PNG in the tree at its own size, so
+the Windows/Android/iOS sets stay in step.
+
+## What the tests now establish
+
+`tests/bundle.py`: **121 passed, 0 failed, 0 NOT RUN.**
+
+Three new read-only flags let the shipped binary be asked directly, the same
+device `--locate` introduced in S10b:
+
+```bash
+aegis-ui --locate    # where it would find the Python side
+aegis-ui --python    # which interpreter it would run, and whether it qualifies
+aegis-ui --chain     # what it would tell the user about the audit chain
+```
+
+- **§8** runs the shipped binary on `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — the
+  PATH a double-clicked app gets — and asserts it finds a qualifying Python,
+  that it is not the 3.9 shim, and that it *probed the shim and rejected it*.
+  Then it starves the search down to only that shim and asserts the refusal
+  names 3.10, names the 3.9 that is installed, says what to do, and is not a
+  traceback. Then it forces the bundled `verify.py` and `aegis.cli` onto 3.9
+  by hand and asserts the same.
+- **§9** drives the binary through all three chain states against one database,
+  including four ways of crashing the verifier — the reported annotation
+  `TypeError`, a silent `exit 1`, one that prints `FAIL: audit chain broken at
+  row id 2` and dies before deciding, and one that does not parse. All four
+  must read `unchecked`; none may say "altered"; none may put a traceback where
+  the explanation goes. The same distinction is asserted through
+  `aegis policy show`, which is what the Permissions screen renders.
+- **§6** now asks whether the icon is a *picture*: several hundred distinct
+  colours, a rounded plate with a margin rather than a full square, and a mark
+  in the middle distinct from the corner. A placeholder cannot pass it.
+- **§10** asserts nothing in the config or the built page prevents maximizing —
+  no max size, resizable, and a shell with no hard-coded 1000×700 left in it.
+
+`ui`: 19 unit tests, including seven asserting `chainBanner` never lets a
+crashed verifier and a tampered log share words.
+
+Existing suites unchanged and green: `s10` 86, `s8` 109, `s3b` 60, `tamper`
+all cases as specified.
+
+## What is still NOT established
+
+- That the green button fills the screen. §10 establishes that nothing
+  *prevents* it, which is where the bug was. The click itself needs a human or
+  an accessibility harness.
+- That the Dock draws the icon. §6 establishes it is a real picture at the
+  sizes the Dock uses and that `Info.plist` names it. macOS caches icons, so a
+  reinstall may still show a stale one.
+- That a machine with **no** Python at all refuses correctly. §8 proves the
+  refusal with only an old Python reachable; "none at all" is the same code
+  path with an empty rejected list.
+- Code signing or notarisation. Neither is done by this build.

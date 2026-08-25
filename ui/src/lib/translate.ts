@@ -11,7 +11,7 @@
  *    2. Never soften a denial. A blocked row reads as blocked.
  */
 
-import type { AuditRow, PendingApproval } from "../types";
+import type { AuditRow, ChainStatus, PendingApproval } from "../types";
 
 export type RowKind = "plain" | "blocked" | "waiting";
 
@@ -246,4 +246,69 @@ export function chainDetailSummary(detail: string): string {
     .replace(/^FAIL:\s*/, "")
     .replace(/^OK:\s*/, "");
   return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+/** The banner at the top of every screen, decided in one place.
+ *
+ *  This function exists because the decision it makes was previously spelled
+ *  `chain.checked ? "altered" : "could not check"` inline in App.tsx, and the
+ *  Rust side set `checked` from the verifier's exit code. A verifier that
+ *  crashed exited 1 — the same code it uses for a broken chain — so a wrong
+ *  Python interpreter rendered as:
+ *
+ *      The record of what happened has been altered.
+ *
+ *  It had not been altered. Nothing had been checked. Those are different
+ *  states of the world and this is the table that keeps them apart:
+ *
+ *    intact     no banner. The rows below can be read as written.
+ *    broken     alarm. A verdict was reached and it was bad.
+ *    unchecked  caution, not alarm. No verdict was reached, and the banner
+ *               says so in those words plus what to do about it.
+ *
+ *  `unchecked` deliberately does NOT claim the log is fine. A viewer that
+ *  cannot check the chain has to keep saying it cannot check the chain — which
+ *  is the other half of the same honesty, and the failure S6 was built around.
+ */
+export type ChainBanner = {
+  tone: "none" | "alarm" | "caution";
+  headline: string;
+  body: string;
+  /** Shown under the body when there is a concrete next step. */
+  remedy: string;
+  /** Whether to warn that the rows below cannot be trusted. Only true when
+   *  something actually says they were altered. */
+  distrustRows: boolean;
+};
+
+export function chainBanner(chain: ChainStatus): ChainBanner {
+  // Fall back on `checked` for a snapshot from an older backend that has no
+  // `state`. Absent both, the safe reading is "no verdict", never "broken".
+  const state = chain.state ?? (chain.ok ? "intact" : chain.checked ? "broken" : "unchecked");
+
+  if (state === "intact") {
+    return { tone: "none", headline: "", body: "", remedy: "", distrustRows: false };
+  }
+  if (state === "broken") {
+    return {
+      tone: "alarm",
+      headline: "The record of what happened has been altered.",
+      body:
+        `${chainDetailSummary(chain.detail)}. Everything below is still shown, ` +
+        `but it can no longer be trusted to be complete or unedited.`,
+      remedy: "",
+      distrustRows: true,
+    };
+  }
+  return {
+    tone: "caution",
+    headline: "Aegis could not check its own record.",
+    // The whole sentence, not the summarised first line: when nothing could be
+    // checked, the reason IS the message, and it is written to be read.
+    body:
+      `${chain.detail.trim().replace(/\.$/, "")}. Nothing was checked, so this ` +
+      `says nothing about whether your record is intact.`,
+    remedy: (chain.remedy ?? "").trim(),
+    distrustRows: false,
+  };
 }

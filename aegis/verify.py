@@ -2,11 +2,17 @@
 """Aegis audit chain verifier — standalone, offline, stdlib only.
 
     python3 aegis/verify.py [path/to/audit.db] [--expect-head HASH] [--quiet]
-                            [--no-anchor]
+                            [--no-anchor] [--verdict]
 
     exit 0  chain intact
     exit 1  chain broken (prints the first bad row and what mismatched)
-    exit 2  cannot read the database at all
+    exit 2  cannot read the database at all — or cannot run at all
+
+    --verdict adds one machine-readable last line of stdout,
+    "AEGIS-VERIFY-VERDICT: intact|broken|unreadable", printed only once a
+    verdict has actually been reached. A caller that sees no marker knows the
+    checker never got to an answer, which is NOT the same as an answer of
+    "broken" — see the comment above VERDICT_PREFIX.
 
 S0 open question #4: "Does the audit verifier run offline, without the control
 plane? It must, or a compromised control plane can lie about its own
@@ -65,6 +71,44 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Minimum interpreter, checked before anything else in this file runs.
+#
+# This module's own annotations use `str | None`, which is valid *syntax* on
+# 3.9 but a TypeError the moment a `def` line is evaluated. Without this guard
+# an old interpreter produces a traceback, and a traceback is exit code 1 —
+# the same code this file uses for "the chain is broken". A crashed verifier
+# then reads as a tampered log, which is the worst lie this program can tell.
+#
+# So the check runs at import, above every `def`, and exits 2 (cannot check)
+# with a sentence naming the version required. Deliberately a second copy of
+# the constant in aegis/__init__.py: this file imports nothing from Aegis (S0
+# open question #4) and that rule is worth more than the duplication.
+# Written in the oldest Python that could possibly reach it — no f-strings, no
+# annotations — because the whole point is to run where the rest does not.
+# ---------------------------------------------------------------------------
+
+MIN_PYTHON = (3, 10)
+
+
+def _require_python():
+    if sys.version_info >= MIN_PYTHON:
+        return
+    need = ".".join(str(n) for n in MIN_PYTHON)
+    have = ".".join(str(n) for n in sys.version_info[:3])
+    sys.stderr.write(
+        "Aegis needs Python %s or newer, and this is Python %s.\n"
+        "  interpreter: %s\n"
+        "The audit chain was NOT checked. This says nothing about whether the\n"
+        "log is intact — only that this interpreter cannot run the checker.\n"
+        "Install Python %s or newer and run the verifier with it.\n"
+        % (need, have, sys.executable, need)
+    )
+    raise SystemExit(2)
+
+
+_require_python()
 
 GENESIS_PREV_HASH = "0" * 64
 FIELDS = ("id", "ts", "tool", "effect", "rule_id", "reason", "paths")
@@ -403,18 +447,43 @@ def _broken(row_id: int, detail: str, verified_before: int) -> int:
     return 1
 
 
+# What --verdict prints, keyed by the exit code the checker actually reached.
+#
+# The marker exists because an exit code cannot distinguish "I checked and the
+# chain is broken" from "I died before I could check". Both are 1: the first by
+# `return 1` below, the second because that is what CPython exits with on an
+# uncaught exception. A caller that reads the code alone must either treat a
+# crash as tampering (a false alarm on the one screen whose job is honest
+# tamper reporting) or treat tampering as a crash (silence when it matters).
+#
+# This line is printed only after verify() has RETURNED — so it cannot be
+# produced by an import error, a syntax error, a missing module, a wrong
+# interpreter, or an exception anywhere in the check. Its absence is therefore
+# positive evidence that no verdict was reached, and callers are expected to
+# treat "no marker" as "not checked" rather than as anything about the log.
+VERDICT_PREFIX = "AEGIS-VERIFY-VERDICT:"
+VERDICT_BY_CODE = {0: "intact", 1: "broken", 2: "unreadable"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Verify the Aegis audit hash chain.")
     ap.add_argument("db", nargs="?", default=None, help="path to audit.db")
     ap.add_argument("--expect-head", default=None, metavar="HASH",
                     help="externally anchored head row_hash; detects tail truncation")
     ap.add_argument("--quiet", action="store_true", help="print nothing on success")
+    ap.add_argument("--verdict", action="store_true",
+                    help="print a machine-readable verdict line as the last line "
+                         "of stdout. Absent output means no verdict was reached.")
     ap.add_argument("--no-anchor", action="store_true",
                     help=f"ignore any {HEAD_FILE_NAME} beside the database and "
                          f"check the chain alone")
     args = ap.parse_args()
     path = Path(args.db).expanduser() if args.db else default_db_path()
-    return verify(path, args.expect_head, args.quiet, use_anchor=not args.no_anchor)
+    code = verify(path, args.expect_head, args.quiet, use_anchor=not args.no_anchor)
+    if args.verdict:
+        # Reached only because verify() returned. See VERDICT_PREFIX above.
+        print(f"{VERDICT_PREFIX} {VERDICT_BY_CODE.get(code, 'unreadable')}")
+    return code
 
 
 if __name__ == "__main__":

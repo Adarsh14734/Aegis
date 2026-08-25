@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && rm -rf ../aegis/__pycache__"
   },
   "app": {
     "windows": [
@@ -15,13 +15,17 @@
         "title": "Aegis",
         "width": 1000,
         "height": 700,
-        "resizable": false,
+        "resizable": true,
         "fullscreen": false,
-        "maximizable": false,
+        "maximizable": true,
         "center": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "theme": "Light"
+        "theme": "Light",
+        "minimizable": true,
+        "closable": true,
+        "minWidth": 900,
+        "minHeight": 620
       }
     ],
     "security": {
@@ -30,8 +34,18 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
-    "icon": ["icons/icon.icns"],
-    "macOS": { "minimumSystemVersion": "11.0" }
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "icon": [
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "resources": {
+      "../../aegis": "aegis"
+    }
   }
 }

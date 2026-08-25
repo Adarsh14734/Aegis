@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activityLine,
+  chainBanner,
   approvalHeadline,
   approvalWhy,
   chainDetailSummary,
@@ -145,4 +146,99 @@ test("formatTime keeps a bare clock for today and dates anything older", () => {
     `a row from five days ago rendered as a bare time: ${rendered}`,
   );
   assert.match(rendered, /2:05 pm$/);
+});
+
+
+/* ---------------------------------------------------------------------------
+ * A crashed verifier is not a tampered chain.
+ *
+ * The regression these exist for: the Rust side set `checked` from the
+ * verifier's exit code, and a Python that could not run verify.py exits 1 —
+ * the same code verify.py uses for a broken chain. So the banner on a machine
+ * with the wrong interpreter read "The record of what happened has been
+ * altered." Nothing had been altered and nothing had been checked.
+ *
+ * The screen whose entire purpose is honest tamper reporting must not cry
+ * wolf, so these tests assert the two states never share words.
+ * ------------------------------------------------------------------------- */
+
+const chain = (o) => ({
+  ok: false, checked: false, state: "unchecked",
+  detail: "", remedy: "", db_path: "/tmp/audit.db", ...o,
+});
+
+test("an intact chain shows no banner at all", () => {
+  const b = chainBanner(chain({
+    ok: true, checked: true, state: "intact",
+    detail: "OK: 41 row(s) verified, chain intact",
+  }));
+  assert.equal(b.tone, "none");
+  assert.equal(b.headline, "");
+});
+
+test("a broken chain says the record was altered, and distrusts the rows", () => {
+  const b = chainBanner(chain({
+    state: "broken", checked: true,
+    detail: "FAIL: audit chain broken at row id 3\n  row_hash mismatch",
+  }));
+  assert.equal(b.tone, "alarm");
+  assert.match(b.headline, /has been altered/);
+  assert.equal(b.distrustRows, true);
+  // The hash dump stays off the screen — same rule as every other detail line.
+  assert.ok(!b.body.includes("row_hash"), b.body);
+});
+
+test("a verifier that could not run NEVER says the record was altered", () => {
+  const crashes = [
+    // The reported one: 3.9 on the PATH a Finder-launched app inherits.
+    "Aegis needs Python 3.10 or newer and did not find it. The newest on this " +
+      "machine is Python 3.9.6, at /Library/Developer/CommandLineTools/usr/bin/python3.",
+    // A verifier that started and died.
+    "The chain checker did not finish (exit 1). Nothing was checked — this is " +
+      "not a report about your log. TypeError: unsupported operand type(s) for |",
+    // No Python side in the bundle at all.
+    "Aegis could not find its own Python components.",
+  ];
+  for (const detail of crashes) {
+    const b = chainBanner(chain({ state: "unchecked", detail }));
+    assert.equal(b.tone, "caution", detail);
+    assert.match(b.headline, /could not check/);
+    // The accusation itself must never appear anywhere in the banner, and the
+    // headline — the line people actually read — carries none of its words.
+    assert.ok(!/has been altered|was altered|tamper/i.test(b.headline + " " + b.body),
+      `a crashed verifier accused the log: ${b.headline} ${b.body}`);
+    assert.ok(!/alter|tamper|broken/i.test(b.headline),
+      `a crashed verifier accused the log in its headline: ${b.headline}`);
+    assert.equal(b.distrustRows, false);
+  }
+});
+
+test("...and it does not claim the log is fine either", () => {
+  const b = chainBanner(chain({ state: "unchecked", detail: "no interpreter" }));
+  assert.match(b.body, /nothing was checked/i);
+  assert.ok(!/intact|verified|fine|ok\b/i.test(b.headline), b.headline);
+});
+
+test("the two states share no wording a person could confuse", () => {
+  const broken = chainBanner(chain({ state: "broken", checked: true, detail: "FAIL: x" }));
+  const unchecked = chainBanner(chain({ state: "unchecked", detail: "y" }));
+  assert.notEqual(broken.headline, unchecked.headline);
+  assert.notEqual(broken.tone, unchecked.tone);
+});
+
+test("a snapshot with no state at all falls back to 'no verdict', not 'broken'", () => {
+  // Defensive: an older backend, or a field lost in transit. The safe reading
+  // of a missing verdict is that there was no verdict.
+  const b = chainBanner({ ok: false, checked: false, detail: "?", db_path: "" });
+  assert.equal(b.tone, "caution");
+  assert.equal(b.distrustRows, false);
+});
+
+test("the remedy is shown when there is one, and never invented", () => {
+  const withFix = chainBanner(chain({
+    state: "unchecked", detail: "no Python", remedy: "Install Python 3.10 or newer.",
+  }));
+  assert.match(withFix.remedy, /Install Python/);
+  const noFix = chainBanner(chain({ state: "broken", checked: true, detail: "FAIL: x" }));
+  assert.equal(noFix.remedy, "");
 });

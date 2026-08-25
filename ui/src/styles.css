@@ -36,8 +36,9 @@
 html, body, #root {
   margin: 0;
   padding: 0;
+  width: 100%;
   height: 100%;
-  overflow: hidden; /* fixed 1000x700 window; screens scroll internally */
+  overflow: hidden; /* the window never scrolls; .main scrolls inside it */
 }
 
 body {
@@ -52,10 +53,20 @@ body {
 
 /* — window shell — */
 
+/* Fills the OS window, whatever size that is.
+ *
+ * This used to be a hard `width: 1000px; height: 700px`, written when the
+ * window was `resizable: false` and could only ever be 1000x700. The window
+ * became resizable and maximizable and this did not, so pressing the green
+ * button grew the frame while the app stayed a 1000x700 panel pinned to the
+ * top-left with dead background around it — which is what "zoom does not
+ * maximize" looked like from outside. The OS enforces the minimum size
+ * (minWidth/minHeight in tauri.conf.json); the layout below is fluid above it.
+ */
 .window {
   display: flex;
-  width: 1000px;
-  height: 700px;
+  width: 100%;
+  height: 100%;
   background: #fff;
   overflow: hidden;
 }
@@ -116,10 +127,15 @@ body {
 
 .main {
   flex: 1;
+  min-width: 0; /* or a wide table would push .nav off the left edge */
   overflow: auto;
   padding: 30px 42px 36px;
   background: #fff;
 }
+
+/* A maximized window is wider than any line of text should be. The pane grows;
+   the reading column does not past the measure the design was drawn against. */
+.main > * { max-width: 960px; }
 
 /* — shared type — */
 
@@ -310,11 +326,42 @@ body {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink-blocked) 30%, transparent);
 }
 .banner-alarm strong { font-family: var(--font-heading); font-size: 15px; }
+/* Caution, not alarm. Everything that means "Aegis could not check" rather
+   than "Aegis checked and it was bad" wears this. The colours are deliberately
+   NOT --ink-blocked: that red appears only where something was actually
+   blocked or actually broken, and spending it on a state that means "we do not
+   know" is how a red banner stops meaning anything. */
+.banner-caution {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  color: var(--color-text);
+  box-shadow: inset 0 0 0 1px var(--color-divider);
+}
+.banner-caution strong { font-family: var(--font-heading); font-size: 15px; }
+.banner-remedy {
+  font-size: 12px;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
 .banner-dev {
   background: #ffe9a8;
   color: #4a3a00;
   box-shadow: inset 0 0 0 1px #b08900;
   font-weight: 600;
+}
+
+/* The two reasons a screen can be read-only, in the two voices they deserve.
+   Same distinction as .banner-alarm vs .banner-caution, at paragraph scale. */
+.chain-broken {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-blocked);
+}
+.chain-unchecked {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent);
 }
 
 .stack { display: flex; flex-direction: column; }

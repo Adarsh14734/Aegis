@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { loadSnapshot } from "./api";
-import { chainDetailSummary, formatSince } from "./lib/translate";
+import { chainBanner, formatSince } from "./lib/translate";
 import { Activity } from "./screens/Activity";
 import { Approvals } from "./screens/Approvals";
 import { DataFlow } from "./screens/DataFlow";
@@ -44,6 +44,9 @@ export default function App() {
   }, [refresh]);
 
   const waiting = snap?.counters.waiting ?? 0;
+  const banner = snap
+    ? chainBanner(snap.chain)
+    : { tone: "none" as const, headline: "", body: "", remedy: "", distrustRows: false };
 
   return (
     <div className="window">
@@ -87,25 +90,31 @@ export default function App() {
           </div>
         )}
 
-        {/* A broken chain is shown before anything derived from the rows.
-            Rows are still listed underneath, but never as if trustworthy. */}
-        {snap && !snap.chain.ok && (
-          <div className="banner banner-alarm" style={{ marginBottom: 22 }}>
-            <strong>
-              {snap.chain.checked
-                ? "The record of what happened has been altered."
-                : "Aegis could not check its own record."}
-            </strong>
-            <div style={{ marginTop: 6 }}>
-              {chainDetailSummary(snap.chain.detail)}.
-              {snap.chain.checked && (
-                <>
-                  {" "}
-                  Everything below is still shown, but it can no longer be
-                  trusted to be complete or unedited.
-                </>
-              )}
-            </div>
+        {/* Anything the chain check has to say is shown before anything
+            derived from the rows. Rows are still listed underneath — hiding
+            them would destroy the operator's only view of what happened — but
+            never as if trustworthy.
+
+            Two banners, not one, and never interchangeable. `alarm` means a
+            verdict was reached and the log does not hash to itself. `caution`
+            means no verdict was reached at all. The old code chose between
+            them on `chain.checked`, which the Rust side set from the
+            verifier's exit code; a verifier that crashed exits 1, and so does
+            a verifier that found tampering, so a wrong Python interpreter
+            painted the tamper alarm. See chainBanner(). */}
+        {snap && banner.tone !== "none" && (
+          <div
+            className={`banner ${banner.tone === "alarm" ? "banner-alarm" : "banner-caution"}`}
+            role={banner.tone === "alarm" ? "alert" : "status"}
+            style={{ marginBottom: 22 }}
+          >
+            <strong>{banner.headline}</strong>
+            <div style={{ marginTop: 6 }}>{banner.body}</div>
+            {banner.remedy && (
+              <div style={{ marginTop: 8 }} className="banner-remedy">
+                {banner.remedy}
+              </div>
+            )}
           </div>
         )}
 
