@@ -1,176 +1,38 @@
 # Aegis
 
-An MCP-layer policy proxy for AI coding agents. It sits between your agent and
-one MCP server, decides every `tools/call` against a policy file the agent
-cannot reach, and appends each decision to a hash-chained audit log.
+**Claude Code's sandbox lets an agent read your SSH keys and AWS
+credentials by default. Aegis doesn't.**
 
-**Read [THREAT-MODEL.md](THREAT-MODEL.md) before you rely on it**, especially
-§7, which lists what Aegis does not protect against. The short version is at the
-bottom of this file and `aegis doctor` prints it every time it runs.
+[GIF HERE — agent tries .env, gets denied, Activity shows it]
 
-Aegis has not been reviewed by anyone but its author, has no security audit and
-no compliance certification. It is not suitable for regulated or enterprise
-production use, and must not be described that way.
+## What it does
 
----
+Sits between your AI coding agent and your machine:
 
-## Install
+- **Deny by default** on every tool call
+- **Kernel sandbox** on subprocesses — `cat .env` can't bypass it
+- **Tamper-evident audit log** — hash-chained, verifiable offline
+  with a script that shares no code with the writer
+- **Outbound requests checked** before they're made
+- **Secrets never reach the MCP server**
 
-```bash
-pip install aegis-mcp
-```
+## Install (2 minutes, macOS Apple Silicon)
 
-Credential storage is optional and off by default:
+    pip install aegis-mcp
+    aegis init      # detects Claude Code / Cursor, asks 2 questions
+    aegis doctor    # proves the proxy is actually running
 
-```bash
-pip install 'aegis-mcp[keyring]'
-```
+Optional Mac app: [releases link]
 
-Without it, everything works except `${aegis:...}` credential handles, which are
-**denied** rather than passed through unprotected.
+## What it does NOT do
 
-## Set up
+- Does not stop prompt injection
+- Cannot protect anything outside the MCP boundary
+- Kernel escape defeats the sandbox
+- No external security review, no certifications
 
-Run this in the project directory your agent works in:
+Full threat model: THREAT-MODEL.md
 
-```bash
-aegis init
-```
+## License
 
-It asks two questions — which folders the agent may work in, and which paths it
-must never open — then writes a policy to your OS data directory at mode 0600
-and offers to route the MCP servers it finds through the proxy. It shows a
-unified diff of every file it is about to change and takes a backup first.
-
-To script it:
-
-```bash
-aegis init --yes --workspace ~/code/myproject
-```
-
-## Prove it is actually working
-
-```bash
-aegis doctor
-```
-
-This is the command that matters. It does not read your config and tell you it
-looks fine — it runs your configured server command exactly as your agent does,
-speaks real MCP to it, asks it to open a file your policy forbids, and then
-reopens the audit database to confirm a row appeared and the chain still
-verifies. If the proxy is not in the pipe, `doctor` exits non-zero and says so.
-
-**Restart your MCP client after `aegis init`.** A client starts its MCP servers
-once, when it launches; editing the configuration afterwards does not move a
-server that is already running. `aegis doctor` scans the process table for
-servers running outside the proxy and fails if it finds one, but that is a
-heuristic — it cannot see inside an already-running client. A green report and
-an unmediated agent look identical from there.
-
-## Confine the whole agent (optional, and the strongest part)
-
-Everything above mediates one MCP pipe. `aegis run` puts the agent's **entire
-process tree** inside an OS sandbox, so Bash, subprocesses, `npm install` and the
-agent's own native file tools are constrained by the kernel:
-
-```bash
-npm install -g @anthropic-ai/sandbox-runtime   # the sandbox Aegis wraps
-aegis run -- claude
-```
-
-Better, `aegis init` offers to route your client's own launch through it, so
-typing `claude` starts it sandboxed and everything it spawns inherits that. It
-asks — declining leaves the manual `aegis run` behaviour and `aegis doctor`
-keeps warning. `aegis shell-init` prints a shell-only version.
-
-Inside, `cat ~/.ssh/id_rsa` fails with `Operation not permitted`, a write outside
-your workspace fails, and `curl` reaches only the domains your policy allows. The
-profile is generated from `policy.json`, so there is one source of truth: a path
-denied in policy is denied by the kernel.
-
-If the sandbox cannot be established — wrong OS, runtime missing, profile
-rejected — `aegis run` **refuses to launch**. It never falls back to running
-unconfined.
-
-Limits worth knowing before you rely on it. A wrapper is **advice, not
-enforcement**: it is a PATH entry, so running the real binary's full path
-bypasses it, a shell that never sourced the shim is unaffected, and a client
-**already running** cannot be confined at all — that needs an Endpoint Security
-entitlement Apple grants to registered organizations, which no `pip install` can
-supply. A kernel escape defeats the whole thing
-([THREAT-MODEL.md §7.6 and §7.7](THREAT-MODEL.md)). See [S9](S9-REPORT.md).
-
-## Undo it
-
-```bash
-aegis uninstall
-```
-
-Restores the MCP configuration from the backup. It deliberately leaves the audit
-log and the policy where they are and tells you where that is — deleting an
-audit trail on your behalf is the one thing a compromised setup would most want
-to do.
-
----
-
-## The other commands
-
-| Command | What it does |
-|---|---|
-| `aegis proxy -- <server-cmd>` | Run the proxy. This is what `aegis init` writes into your config |
-| `aegis run -- <agent-cmd>` | Launch an agent inside the OS sandbox (needs `srt`; refuses without it) |
-| `aegis shell-init` | Print a shell snippet routing detected clients through the sandbox |
-| `aegis-stop "reason"` | Kill switch: deny every tool call, starting with the next one |
-| `aegis-resume` | Release it |
-| `aegis-restore list` / `restore <id>` | Recover files copied aside before a destructive call |
-| `aegis-secret set <name>` | Store a credential in the OS keychain (needs the `keyring` extra) |
-| `python3 -m aegis.verify` | Verify the audit chain |
-
-Verify the chain against a hash you wrote down somewhere else — the only check
-that catches rows deleted off the end of the log:
-
-```bash
-python3 -m aegis.verify --expect-head <hash>
-```
-
-`verify.py` imports nothing from Aegis and carries its own independent copy of
-the chain rule, so editing the code that writes the log cannot make forged rows
-validate. The strongest way to run it is to copy that one file somewhere else
-and run it directly — `python3 verify.py <path-to-audit.db>` — which is how you
-check a log on a machine whose Aegis you no longer trust.
-
----
-
-## What this does not cover
-
-Aegis mediates tool calls that cross an MCP stdio pipe it was put in front of.
-Outside that pipe it sees nothing:
-
-- **Bash and every shell command**, and **native agent file tools**
-  (Read/Write/Edit in Claude Code), *unless* you launch the agent with
-  `aegis run` — that is what C11 is for. Without it, an agent running
-  `cat ~/.ssh/id_rsa` never touches this proxy.
-- **Agents started outside the wrapped path.** `aegis init` can route your
-  client's launch through the sandbox, but the real binary's full path, an
-  unsourced shell, and any process already running all escape it.
-- **A kernel escape**, which defeats the sandbox and everything above it.
-- **MCP servers not routed through the proxy**, and anything a downstream server
-  does on its own. Aegis performs the requests for tools you mark `"egress"`,
-  and controls those; it does not intercept requests it did not make.
-- **Malware already on the machine, and anyone with root.** Both can edit the
-  policy, the audit database and the head anchor.
-- **Prompt injection as a phenomenon.** Aegis assumes injection succeeds and
-  limits what the resulting instruction can reach.
-
-[THREAT-MODEL.md §7](THREAT-MODEL.md) is the full list and it is longer than
-this one.
-
-## Sprint reports
-
-Each control's verification tier, evidence and known gaps are in the sprint
-reports: [S1](S1-REPORT.md) proxy · [S2](S2-REPORT.md) audit chain ·
-[S3a](S3a-REPORT.md) / [S3b](S3b-REPORT.md) egress and DLP ·
-[S4](S4-REPORT.md) credentials · [S5](S5-REPORT.md) approval, trash, kill
-switch · [S6](S6-REPORT.md) desktop viewer · [S7](S7-REPORT.md) packaging and
-onboarding · [S8](S8-REPORT.md) Aegis makes the request ·
-[S9](S9-REPORT.md) the sandbox.
+MIT
