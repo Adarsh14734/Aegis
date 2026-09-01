@@ -39,8 +39,10 @@ Sits between your AI coding agent and your machine:
     aegis init      # detects Claude Code / Cursor, asks 2 questions
     aegis doctor    # proves the proxy is actually running
 
-Prefer an app? [Download the .dmg](https://github.com/Adarsh14734/aegis/releases)
-`SHA256: <paste hash>`
+Prefer an app? [Download the .dmg](https://github.com/Adarsh14734/aegis/releases/download/v0.6.0/Aegis_0.6.0_aarch64.dmg)
+`SHA256: bcccaa957fd3a0a15413eb1207a012f0328e309d078e7b7f2af853915e64c6dc`
+
+Unsigned build — right-click the app → Open the first time (macOS will warn about an unidentified developer, that's expected).
 
 Not yet Apple-notarized. First launch: right-click → Open. Or build from source.
 
