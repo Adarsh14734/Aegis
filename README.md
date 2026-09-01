@@ -3,7 +3,24 @@
 **Claude Code's sandbox lets an agent read your SSH keys and AWS
 credentials by default. Aegis doesn't.**
 
-[GIF HERE — agent tries .env, gets denied, Activity shows it]
+```
+$ claude "read the .env file in this project"
+
+  ⎿  Read(.env)
+     ✗ DENIED by aegis — path outside allowed roots
+
+  ⎿  Bash(cat .env)
+     ✗ DENIED by aegis — kernel sandbox, subprocess blocked
+
+  ⎿  Bash(find / -name ".env" 2>/dev/null)
+     ✗ DENIED by aegis — kernel sandbox, subprocess blocked
+
+  ⎿  Read(~/.ssh/id_rsa)
+     ✗ DENIED by aegis — path outside allowed roots
+
+$ aegis verify
+  ✓ 4 denials, hash chain intact (verified offline)
+```
 
 ## What it does
 
