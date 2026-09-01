@@ -39,7 +39,10 @@ Sits between your AI coding agent and your machine:
     aegis init      # detects Claude Code / Cursor, asks 2 questions
     aegis doctor    # proves the proxy is actually running
 
-Optional Mac app: [releases link]
+Prefer an app? [Download the .dmg](https://github.com/Adarsh14734/aegis/releases)
+`SHA256: <paste hash>`
+
+Not yet Apple-notarized. First launch: right-click → Open. Or build from source.
 
 ## What it does NOT do
 
@@ -49,6 +52,8 @@ Optional Mac app: [releases link]
 - No external security review, no certifications
 
 Full threat model: THREAT-MODEL.md
+
+- Not audited by anyone but me — read the source, that's why it's MIT
 
 ## License
 
