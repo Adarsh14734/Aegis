@@ -200,6 +200,14 @@ SQLite with WAL, no Postgres, no Redis, no daemon. Fewer moving parts is a secur
 
 12. **Any compliance certification.** No SOC 2, no ISO 27001, no independent penetration test, no security audit. Until those exist, Aegis is unsuitable for regulated or enterprise production use, and must be described that way.
 
+13. **What the /tmp grant allows.** The sandbox grants write access to `/tmp` because clients cannot start without a scratch directory — Claude Code fails at launch with `EPERM` on `mkdir /tmp/claude-501` otherwise. `deny_paths` still apply inside it, but a sandboxed process can write arbitrary files there, and `/tmp` is world-writable on macOS. Measured in S9d rather than assumed: the narrower `$TMPDIR` grant does not work, because the runtime rewrites `TMPDIR` to `/tmp/claude` for everything it launches.
+
+14. **Client preferences do not persist inside a sandboxed session.** Writing `~/.claude/settings.json` is denied by design — see §7.11 — so a `/model` change or any other setting altered during a sandboxed session is lost at exit. This is a usability cost of the hook-execution protection, not a bug.
+
+15. **Denial attribution is not session identity.** S9j attributes kernel denials by the sandbox runtime's per-invocation tag, which encodes the command **truncated to 100 characters**; the random per-invocation suffix is not matched. Two concurrent `aegis run` invocations of the same command still attribute each other's denials. The honest claim for a row is "an `aegis run` of this command denied this path" — not "this session did". Before S9j the claim was weaker still: any concurrent sandbox's denials were recorded as this session's.
+
+16. **Attribution is not integrity.** `audit.db` remains writable from inside the sandbox — S2 gap 1, unchanged by S9j. Knowing which session caused a row says nothing about whether the row survived.
+
 ---
 
 ## 8. Language rules
