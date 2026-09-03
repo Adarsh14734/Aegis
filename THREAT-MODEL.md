@@ -172,23 +172,6 @@ SQLite with WAL, no Postgres, no Redis, no daemon. Fewer moving parts is a secur
 7. **Sandbox escapes and OS-level zero-days.** Aegis inherits the security of Seatbelt/bubblewrap. A kernel escape defeats everything above it.
    *S9 note:* now load-bearing rather than hypothetical. C11 is the reason `cat ~/.ssh/id_rsa` fails, and C11 is exactly as strong as `sandbox-exec`/`bubblewrap` and the runtime that drives them — no stronger. A Seatbelt bypass returns the agent to its pre-S9 authority over the whole filesystem, and Aegis would neither prevent nor notice it. Aegis adds policy, audit and egress *above* an isolation boundary it did not build and cannot audit; D2 accepts that trade deliberately, and this is where the bill arrives.
 
-   7.12  The sandbox grants write access to /tmp so that clients can start.
-      Deny paths still apply inside it, but a sandboxed process can write
-      arbitrary files there.
-
-7.13  Client preference changes made during a sandboxed session do not
-      persist. Writing ~/.claude/settings.json is denied because that file
-      can define hooks, which are shell commands run outside the sandbox.
-
-7.14  Denial attribution matches the sandbox tag, which encodes the command
-      truncated to 100 characters. Two concurrent `aegis run` invocations of
-      the same command still attribute each other's denials. The honest
-      claim is "an aegis run of this command denied this path", not "this
-      session did".
-
-7.15  Attribution is not integrity. audit.db remains writable from inside
-      the sandbox (S2 gap 1, unchanged).
-
 9. **Actions taken through an approved channel.** If the user grants Slack send access, the agent can send an embarrassing Slack message. Least privilege limits scope; it does not judge content.
 
 10. **Insider misuse.** A user who deliberately configures permissive policy to exfiltrate their employer's data will succeed. Aegis will produce an excellent audit trail of them doing it.
