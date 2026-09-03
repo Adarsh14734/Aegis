@@ -172,9 +172,26 @@ SQLite with WAL, no Postgres, no Redis, no daemon. Fewer moving parts is a secur
 7. **Sandbox escapes and OS-level zero-days.** Aegis inherits the security of Seatbelt/bubblewrap. A kernel escape defeats everything above it.
    *S9 note:* now load-bearing rather than hypothetical. C11 is the reason `cat ~/.ssh/id_rsa` fails, and C11 is exactly as strong as `sandbox-exec`/`bubblewrap` and the runtime that drives them — no stronger. A Seatbelt bypass returns the agent to its pre-S9 authority over the whole filesystem, and Aegis would neither prevent nor notice it. Aegis adds policy, audit and egress *above* an isolation boundary it did not build and cannot audit; D2 accepts that trade deliberately, and this is where the bill arrives.
 
-8. **Actions taken through an approved channel.** If the user grants Slack send access, the agent can send an embarrassing Slack message. Least privilege limits scope; it does not judge content.
+   7.12  The sandbox grants write access to /tmp so that clients can start.
+      Deny paths still apply inside it, but a sandboxed process can write
+      arbitrary files there.
 
-9. **Insider misuse.** A user who deliberately configures permissive policy to exfiltrate their employer's data will succeed. Aegis will produce an excellent audit trail of them doing it.
+7.13  Client preference changes made during a sandboxed session do not
+      persist. Writing ~/.claude/settings.json is denied because that file
+      can define hooks, which are shell commands run outside the sandbox.
+
+7.14  Denial attribution matches the sandbox tag, which encodes the command
+      truncated to 100 characters. Two concurrent `aegis run` invocations of
+      the same command still attribute each other's denials. The honest
+      claim is "an aegis run of this command denied this path", not "this
+      session did".
+
+7.15  Attribution is not integrity. audit.db remains writable from inside
+      the sandbox (S2 gap 1, unchanged).
+
+9. **Actions taken through an approved channel.** If the user grants Slack send access, the agent can send an embarrassing Slack message. Least privilege limits scope; it does not judge content.
+
+10. **Insider misuse.** A user who deliberately configures permissive policy to exfiltrate their employer's data will succeed. Aegis will produce an excellent audit trail of them doing it.
 
 11. **What a granted state directory lets the agent reach.** C11 confines the client's process tree, and a client needs somewhere to write its own state — tokens, transcripts, session files — or it starts and cannot work. S9f grants that directory (`~/.claude` for Claude Code), and the grant is not client-specific: **the sandbox cannot tell the client's write from its Bash tool's**, exactly as it cannot tell their network requests apart. So an agent inside the sandbox can modify the transcripts of its own session and the client's stored session state.
     *What is carved back out.* `settings.json`, `plugins/` and `.credentials.json` are added to `denyWrite`, which beats `allowWrite` in the runtime, and this was verified rather than assumed: a shell inside the sandbox cannot create, append to, truncate, delete or rename any of them. That matters because `settings.json` can define hooks — shell commands the client runs — so write access to it would be arbitrary code execution *outside* the sandbox at the next launch, which is a sandbox escape with extra steps.
