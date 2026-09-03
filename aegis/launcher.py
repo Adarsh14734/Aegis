@@ -51,6 +51,7 @@ to "direct invocation of the real binary, and processes already running".
 
 import os
 import shutil
+import sys
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,6 +77,169 @@ KNOWN_CLIENTS = (
 )
 
 MARKER_LINE = "# installed by `aegis init` — remove with `aegis uninstall`"
+
+# The hosts a wrapped client needs in order to work at all.
+#
+# WHY THIS TABLE EXISTS
+#
+# S9c made the wrapper the recommended path, and the sandbox starts with zero
+# reachable domains. So accepting the recommendation made Claude Code stop
+# working: the session never starts, because the client cannot reach its own
+# API. A control that breaks the thing it protects is a control that gets
+# uninstalled, and it takes C1..C11 with it.
+#
+# WHERE THESE COME FROM
+#
+# Measured, not read off a documentation page and not guessed from strings in
+# the binary. Each host below was observed being refused by the sandbox
+# runtime's own proxy while Claude Code started inside it:
+#
+#     srt -d -s <profile with allowedDomains: []> -c claude
+#     [SandboxDebug] No matching config rule, denying: api.anthropic.com:443
+#     [SandboxDebug] Connection blocked to api.anthropic.com:443    (x20)
+#
+# and the visible result was the reported one: "Remote Control disconnected —
+# Session creation failed". Granting the first two turns that line into
+# "/rc active" with no api.anthropic.com refusal left, which is how this list
+# was closed rather than guessed at: the third host only appears once a session
+# gets far enough to reach hosted MCP connectors, and the session works without
+# it. The full capture is in evidence/S9d-client-endpoints.txt.
+#
+# WHAT IS DELIBERATELY NOT HERE
+#
+#   http-intake.logs.us5.datadoghq.com — the client's telemetry sink. It is
+#   refused during startup and the session works anyway, so it is not needed to
+#   function. It is also a third-party host, and quietly opening a route for
+#   diagnostics out of a sandbox somebody installed to reduce their exposure is
+#   not a default anyone asked for. A user who wants it can add it by hand; the
+#   init output names it so the denial is not a mystery.
+#
+#   Every host for cursor, windsurf and cline. They have not been measured on
+#   this machine, and inventing plausible hostnames for a security allowlist is
+#   how an allowlist stops meaning anything. An unmeasured client gets an empty
+#   list and a sentence saying so.
+#
+# Each entry is (host, what it is for, required-to-function).
+CLIENT_ENDPOINTS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "claude": (
+        ("api.anthropic.com",
+         "the API the client talks to — without it no session starts", True),
+        ("downloads.claude.ai",
+         "version checks and auto-update", False),
+        ("mcp-proxy.anthropic.com",
+         "hosted MCP connectors — only needed if you use them", False),
+    ),
+    "cursor": (),
+    "windsurf": (),
+    "cline": (),
+}
+
+
+# Where a wrapped client keeps its own state, and what must stay unwritable
+# inside it.
+#
+# WHY THIS TABLE EXISTS
+#
+# The sandbox grants write access to the workspace, the Aegis data directory
+# and /tmp. A client's own state directory is none of those, so a client
+# launched through the wrapper started and then could not work:
+#
+#     API Error: 401 OAuth access token has expired
+#     Transcript writes are failing (permission denied — EPERM)
+#     /rc failed
+#
+# WHERE THESE COME FROM
+#
+# Measured the way S9d measured endpoints: the client was run inside the real
+# profile and the kernel's own refusals were read out of the macOS unified log
+# (the same source aegis/violations.py uses). Every path below appeared there.
+# The process is named by its version, which is why an obvious filter on
+# "claude" finds nothing:
+#
+#     2.1.258  file-write-create  ~/.claude/.oauth_refresh.lock
+#     2.1.258  file-write-create  ~/.claude/projects/<slug>
+#     2.1.258  file-write-mode    ~/.claude/sessions
+#
+# Granting ~/.claude alone clears all three symptoms; verified against an
+# unsandboxed control run in the same directory. Full capture in
+# evidence/S9f-client-state.txt.
+#
+# WHAT IS DELIBERATELY NOT HERE
+#
+#   ~/.claude.json and its .lock/.tmp.* siblings. They sit directly in the HOME
+#   directory, so granting them means granting a pattern in $HOME, and the
+#   client works without them — measured. What it costs is that whatever the
+#   client stores in that file does not persist between sandboxed launches.
+#   Naming the cost is better than widening the grant to remove it.
+#
+#   Every path for cursor, windsurf and cline. Not measured here. Same rule as
+#   the endpoint table: an unmeasured client gets an empty list and a sentence.
+#
+# Each entry is (path, what it is for, required-to-function).
+CLIENT_STATE_PATHS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "claude": (
+        ("~/.claude",
+         "OAuth token refresh, transcripts and session state — without it "
+         "every request fails with 401", True),
+        ("~/.local/state/claude",
+         "instance and update locks", False),
+        ("~/Library/Caches/claude-cli-nodejs",
+         "logs from MCP servers the client starts", False),
+    ),
+    "cursor": (),
+    "windsurf": (),
+    "cline": (),
+}
+
+# The files inside a granted state directory that must NOT become writable.
+#
+# This is the half that makes the grant defensible. A state directory holds
+# state, but it also holds two things that are not state at all:
+#
+#   settings.json      can define hooks — shell commands the client runs. Write
+#                      access to it is arbitrary code execution OUTSIDE the
+#                      sandbox at the next launch, which is a sandbox escape
+#                      with extra steps.
+#   plugins/           executable plugin code, for the same reason.
+#   .credentials.json  the OAuth token itself on installs that do not use the
+#                      macOS Keychain. Absent on a Keychain machine; denied
+#                      anyway, because a policy that is only correct on one
+#                      platform is not correct.
+#
+# denyWrite beats allowWrite in the runtime, and it was verified rather than
+# assumed: with these listed, a shell inside the sandbox cannot create, append
+# to, truncate, delete or rename any of them, while ordinary state files in the
+# same directory stay writable.
+#
+# Reading them is NOT prevented, and could not be: the client has to read its
+# own settings to start. See THREAT-MODEL.md §7.11.
+CLIENT_STATE_PROTECT: dict[str, tuple[str, ...]] = {
+    "claude": (
+        "~/.claude/settings.json",
+        "~/.claude/plugins",
+        "~/.claude/.credentials.json",
+    ),
+    "cursor": (),
+    "windsurf": (),
+    "cline": (),
+}
+
+
+def client_state_paths(name: str, required_only: bool = False):
+    """[(path, purpose, required)] for a client, or [] if it was never measured."""
+    entries = CLIENT_STATE_PATHS.get(name, ())
+    return [e for e in entries if e[2]] if required_only else list(entries)
+
+
+def client_state_protect(name: str) -> list[str]:
+    """Paths inside this client's state that must stay unwritable."""
+    return list(CLIENT_STATE_PROTECT.get(name, ()))
+
+
+def client_endpoints(name: str, required_only: bool = False):
+    """[(host, purpose, required)] for a client, or [] if it was never measured."""
+    entries = CLIENT_ENDPOINTS.get(name, ())
+    return [e for e in entries if e[2]] if required_only else list(entries)
 
 
 def wrapper_dir() -> Path:
@@ -135,8 +299,6 @@ def aegis_command() -> str:
     found = shutil.which("aegis")
     if found and not is_aegis_wrapper(found):
         return found
-    import sys
-
     return f"{sys.executable} -m aegis.cli"
 
 
@@ -226,6 +388,82 @@ def effective_status(name: str, label: str = "") -> Status:
 
 def path_hint() -> str:
     return f'export PATH="{wrapper_dir()}:$PATH"'
+
+
+# S9h. Putting the wrapper directory on PATH, in the file that would do it.
+#
+# `aegis init` used to write the wrappers and then print "add this line to your
+# shell rc". Most people do not, and `aegis doctor` then reports the client as
+# unsandboxed — which is accurate and useless: the work was done and the last
+# step, the one that makes any of it take effect, was left to a manual edit.
+#
+# So it is offered, with the same shape every other write in this codebase has:
+# show the exact line, show the exact file, ask, back up first.
+PATH_MARKER = "# added by `aegis init` — puts the Aegis launch wrappers on PATH"
+
+
+def login_shell() -> str:
+    """The user's shell name, from $SHELL. Falls back to sh."""
+    return Path(os.environ.get("SHELL", "sh")).name or "sh"
+
+
+def shell_rc(shell: str | None = None) -> Path:
+    """The file that shell reads on login, for the PATH line.
+
+    Not a guess dressed as a fact: each branch is the file that shell actually
+    sources, and the fallback is ~/.profile, which every POSIX shell reads.
+
+      zsh   ~/.zshrc
+      bash  ~/.bash_profile on macOS if it exists — a macOS Terminal tab is a
+            LOGIN shell, which reads .bash_profile and not .bashrc, and writing
+            to .bashrc there produces a line that is never executed. Otherwise
+            ~/.bashrc, which is right everywhere else.
+      fish  ~/.config/fish/config.fish, and a different syntax — see path_line.
+    """
+    shell = shell or login_shell()
+    home = Path.home()
+    if shell == "zsh":
+        return home / ".zshrc"
+    if shell == "fish":
+        return home / ".config" / "fish" / "config.fish"
+    if shell == "bash":
+        profile = home / ".bash_profile"
+        if sys.platform == "darwin" and profile.exists():
+            return profile
+        return home / ".bashrc"
+    return home / ".profile"
+
+
+def path_line(shell: str | None = None) -> str:
+    """The one line that puts the wrapper directory first on PATH."""
+    shell = shell or login_shell()
+    if shell == "fish":
+        # `set -gx PATH` rather than fish_add_path: fish_add_path appends by
+        # default on some versions, and the wrapper only works if it is found
+        # BEFORE the real client.
+        return f'set -gx PATH "{wrapper_dir()}" $PATH'
+    return f'export PATH="{wrapper_dir()}:$PATH"'
+
+
+def path_line_present(rc: Path | None = None, shell: str | None = None) -> bool:
+    """Whether that rc file already puts the wrapper directory on PATH.
+
+    Checked by the DIRECTORY, not by the exact line: a user who wrote their own
+    export, or who ran `aegis shell-init` (which emits the same PATH line
+    inside its shim), has already done this, and appending a second copy would
+    be Aegis adding noise to a file it does not own.
+    """
+    rc = rc or shell_rc(shell)
+    try:
+        text = rc.read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return str(wrapper_dir()) in text
+
+
+def render_path_line(shell: str | None = None) -> str:
+    """The exact bytes that would be appended, marker included."""
+    return f"\n{PATH_MARKER}\n{path_line(shell)}\n"
 
 
 def wrapper_dir_on_path() -> bool:

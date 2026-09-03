@@ -314,6 +314,115 @@ check("...and warns when the wrapper dir is not on PATH",
 
 
 # ---------------------------------------------------------------------------
+rule("5b. THE PATH LINE — offered, never assumed, never written twice")
+# ---------------------------------------------------------------------------
+
+# The wrappers are unreachable until the wrapper directory is early on PATH,
+# and `aegis init` used to print the line and leave the edit to the user. Most
+# people do not make it, and doctor then correctly reports the client as
+# unsandboxed — the flow ending one manual step short of working.
+#
+# The offer is the fix. The SAFETY property is asserted first, because a shell
+# rc is the most personal file Aegis touches and appending to one uninvited
+# would be worse than the friction it removes.
+
+FAKE_HOME = LAB / "fakehome"
+FAKE_HOME.mkdir(exist_ok=True)
+
+
+def init_with_home(*args, shell="/bin/zsh", home=None, **over):
+    home = home or FAKE_HOME
+    return subprocess.run(
+        [sys.executable, "-m", "aegis.cli", "init", *args],
+        capture_output=True, text=True, timeout=300, cwd=str(WS),
+        env=env_with(BASE_PATH, HOME=str(home), SHELL=shell, **over),
+    )
+
+
+# --- the safety property ----------------------------------------------------
+shutil.rmtree(WRAPPER_DIR, ignore_errors=True)
+WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
+zshrc = FAKE_HOME / ".zshrc"
+zshrc.write_text("# the user's own file\nexport EDITOR=vim\n")
+before = zshrc.read_text()
+
+got = init_with_home("--yes", "--workspace", str(WS), "--wrap-clients")
+check("a bare --yes --wrap-clients does NOT touch the shell rc",
+      zshrc.read_text() == before,
+      "the rc was edited without --path-line:\n" + zshrc.read_text())
+check("...it offers, and says which file and which line",
+      str(zshrc) in got.stdout and "export PATH=" in got.stdout, got.stdout[-900:])
+check("...and declining leaves the manual instruction",
+      "Declined" in got.stdout and "shell-init" in got.stdout, got.stdout[-700:])
+
+# --- the offer, accepted ----------------------------------------------------
+got = init_with_home("--yes", "--workspace", str(WS), "--wrap-clients", "--path-line")
+text = zshrc.read_text()
+check("--path-line appends it", str(launcher.wrapper_dir()) in text, text)
+check("...keeping everything that was already in the file",
+      "export EDITOR=vim" in text and "# the user's own file" in text, text)
+check("...under a marker naming what wrote it",
+      launcher.PATH_MARKER in text, text)
+check("...as an export that puts the wrapper dir FIRST",
+      f'export PATH="{launcher.wrapper_dir()}:$PATH"' in text, text)
+check("...after backing the file up",
+      "backed up to" in got.stdout, got.stdout[-800:])
+check("...and says it needs a new shell to take effect",
+      "NEW shell" in got.stdout or "new shell" in got.stdout, got.stdout[-600:])
+check("...and that uninstall will not remove it",
+      "uninstall" in got.stdout and "NOT remove" in got.stdout, got.stdout[-800:])
+
+# --- never twice ------------------------------------------------------------
+after_first = zshrc.read_text()
+got = init_with_home("--yes", "--workspace", str(WS), "--wrap-clients", "--path-line")
+check("a second run does not append it again",
+      zshrc.read_text() == after_first,
+      f"the line was written twice:\n{zshrc.read_text()}")
+check("...and says so rather than staying silent",
+      "already named in" in got.stdout, got.stdout[-600:])
+
+# A hand-written export counts too: this is checked by DIRECTORY, not by
+# matching Aegis's own line, so a user who did it themselves is left alone.
+hand = LAB / "handhome"
+hand.mkdir(exist_ok=True)
+(hand / ".zshrc").write_text(f'export PATH="{launcher.wrapper_dir()}:$PATH"  # mine\n')
+check("a hand-written PATH entry is recognised, not duplicated",
+      launcher.path_line_present(hand / ".zshrc"))
+
+# --- the right file for the shell ------------------------------------------
+import os as _os  # noqa: E402
+
+_real_home = _os.environ.get("HOME")
+_os.environ["HOME"] = str(FAKE_HOME)
+try:
+    cases = [("zsh", ".zshrc"), ("fish", "config.fish"), ("sh", ".profile")]
+    for shell, expected in cases:
+        _os.environ["SHELL"] = f"/bin/{shell}"
+        check(f"{shell} -> {expected}",
+              launcher.shell_rc().name == expected, str(launcher.shell_rc()))
+    _os.environ["SHELL"] = "/bin/bash"
+    check("bash -> a file bash actually reads",
+          launcher.shell_rc().name in (".bashrc", ".bash_profile"),
+          str(launcher.shell_rc()))
+    _os.environ["SHELL"] = "/usr/local/bin/fish"
+    check("fish gets fish syntax, not an export it cannot parse",
+          launcher.path_line().startswith("set -gx PATH"), launcher.path_line())
+    check("...putting the wrapper dir before the rest of PATH",
+          launcher.path_line().endswith("$PATH"), launcher.path_line())
+    _os.environ["SHELL"] = "/bin/zsh"
+    check("an unknown shell falls back to ~/.profile, which every shell reads",
+          (lambda: (_os.environ.__setitem__("SHELL", "/bin/weirdsh"),
+                    launcher.shell_rc().name)[1])() == ".profile")
+finally:
+    _os.environ["SHELL"] = "/bin/zsh"
+    if _real_home is not None:
+        _os.environ["HOME"] = _real_home
+
+check("the operator's OWN shell rc was never touched by any of this",
+      not any(labguard.assert_untouched()[1]), str(labguard.assert_untouched()[1]))
+
+
+# ---------------------------------------------------------------------------
 rule("6. DOCTOR REPORTS WHICH IS ACTIVE, AND STOPS WARNING WHEN WRAPPED")
 # ---------------------------------------------------------------------------
 
@@ -355,6 +464,211 @@ check("being unwrapped is a WARN, never a FAIL — opting out is a choice",
       "[ FAIL ] Client launches through the sandbox" not in unwrapped
       and "[ warn ] Client launches through the sandbox" in unwrapped,
       unwrapped[:600])
+
+
+# ---------------------------------------------------------------------------
+rule("6b. NO MCP SERVER IS NOT A FAILURE")
+# ---------------------------------------------------------------------------
+
+# `aegis doctor` reported FAIL for "MCP configuration points at the proxy" when
+# no MCP server was configured at all. That is an ordinary state — somebody who
+# wants the kernel sandbox and no MCP mediation has nothing to route — and a red
+# FAIL on a clean install reads as broken software, which is how people learn to
+# ignore the report.
+#
+# The distinction that matters is between HAVING NOTHING and HAVING SOMETHING
+# UNPROTECTED. The second one stays a FAIL: a configured server that does not go
+# through Aegis receives tool calls that are unmediated and unrecorded.
+
+from aegis import clients  # noqa: E402
+from aegis import doctor as doctor_mod  # noqa: E402
+
+
+def wiring_status(project: Path):
+    report = doctor_mod.Report()
+    doctor_mod._check_wiring(report, project)
+    return report.checks[0]
+
+
+EMPTY_PROJECT = LAB / "no-mcp-here"
+EMPTY_PROJECT.mkdir(exist_ok=True)
+status = wiring_status(EMPTY_PROJECT)
+check("with no MCP server anywhere, the wiring check does not FAIL",
+      status.status != doctor_mod.FAIL, f"{status.status}: {status.lines}")
+check("...it skips, because there was nothing to check",
+      status.status == doctor_mod.SKIP, status.status)
+check("...saying in one sentence that the sandbox still applies",
+      any("sandbox" in l and "still applies" in l for l in status.lines),
+      str(status.lines))
+check("...and that this is not a problem",
+      any("not a problem" in l for l in status.lines), str(status.lines))
+check("...while still naming where it looked",
+      any("Looked in" in l for l in status.lines), str(status.lines))
+
+# A config file that exists but names no servers is the same state.
+EMPTY_CONFIG = LAB / "empty-mcp"
+EMPTY_CONFIG.mkdir(exist_ok=True)
+(EMPTY_CONFIG / ".mcp.json").write_text(json.dumps({"mcpServers": {}}))
+status = wiring_status(EMPTY_CONFIG)
+check("a config file with no servers in it is also 'nothing to route'",
+      status.status == doctor_mod.SKIP, f"{status.status}: {status.lines}")
+
+# And the case that must stay red.
+LOOSE = LAB / "unwrapped-mcp"
+LOOSE.mkdir(exist_ok=True)
+(LOOSE / ".mcp.json").write_text(json.dumps({
+    "mcpServers": {"files": {"command": "npx", "args": ["-y", "@mcp/files"]}}}))
+status = wiring_status(LOOSE)
+check("a server that exists but is NOT routed through Aegis is still a FAIL",
+      status.status == doctor_mod.FAIL, f"{status.status}: {status.lines}")
+check("...saying its tool calls are unmediated and unrecorded",
+      any("unmediated and unrecorded" in l for l in status.lines), str(status.lines))
+
+# The PROOF check follows the same distinction.
+def proof_status(configured):
+    report = doctor_mod.Report()
+    doctor_mod._check_live(report, None, LAB / "x.db", [], LAB, 5.0,
+                           configured=configured)
+    return report.checks[0]
+
+
+status = proof_status(0)
+check("PROOF skips when there is no server to send a probe through",
+      status.status == doctor_mod.SKIP, f"{status.status}: {status.lines}")
+check("...and says so without implying the sandbox is unproven",
+      any("does not depend on MCP" in l for l in status.lines), str(status.lines))
+status = proof_status(1)
+check("PROOF still FAILS when a server exists and is not wrapped",
+      status.status == doctor_mod.FAIL, f"{status.status}: {status.lines}")
+
+# End to end, through the real command, on a project with no MCP config.
+got = subprocess.run(
+    [sys.executable, "-m", "aegis.cli", "doctor", "--no-probe"],
+    capture_output=True, text=True, timeout=300, cwd=str(EMPTY_PROJECT),
+    env=env_with(BASE_PATH))
+wiring_lines = [l for l in got.stdout.splitlines()
+                if "MCP configuration points at the proxy" in l]
+check("`aegis doctor` on a project with no MCP config does not print FAIL for it",
+      wiring_lines and "FAIL" not in wiring_lines[0], str(wiring_lines))
+check("...and does not count it among the failures at the end",
+      "MCP configuration points at the proxy" not in
+      got.stdout.split("check(s) FAILED")[-1] if "check(s) FAILED" in got.stdout
+      else True, got.stdout[-500:])
+
+
+# ---------------------------------------------------------------------------
+rule("6c. ROUTED IS NOT THE SAME AS CONNECTED")
+# ---------------------------------------------------------------------------
+
+# Found by the first end-to-end verification of the MCP layer on a real
+# install. Every check was green — configuration points at the proxy, no client
+# is running the old wiring, PROOF passes — while `claude mcp list` said the
+# server was "Pending approval" and the client had never connected to it.
+# Nothing was mediated at all.
+#
+# Both green checks were green for the wrong reason. PROOF launches the server
+# ITSELF, so it proves the proxy works, not that the client uses it. And the
+# stale-wiring check looks for the UNWRAPPED command, so a server nobody
+# launched passes it vacuously.
+
+WRAPPED_ENTRY = clients.wrap_entry(
+    {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem",
+                                str(WS)]})
+ROUTED = clients.Detected(
+    client="Claude Code (project)", path=LAB / "proof" / ".mcp.json",
+    container=("mcpServers",), servers={"filesystem": WRAPPED_ENTRY})
+
+PROXY_CMD = (f"/usr/bin/python3 -m aegis.proxy -- npx -y "
+             f"@modelcontextprotocol/server-filesystem {WS}")
+CLIENT_CMD = "/Applications/Claude.app/Contents/MacOS/Claude"
+APPLE_CMD = ("/System/Library/PrivateFrameworks/UIFoundation.framework/Versions/"
+             "A/XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService")
+
+
+def live_status(table):
+    real = doctor_mod._process_table
+    doctor_mod._process_table = lambda: table
+    try:
+        report = doctor_mod.Report()
+        doctor_mod._check_server_live(report, [ROUTED])
+        return report.checks[0]
+    finally:
+        doctor_mod._process_table = real
+
+
+# --- the reported state: routed, a client running, server never launched ----
+status = live_status([(900, 1, CLIENT_CMD), (901, 900, "/bin/zsh")])
+check("a routed server that nothing has launched is not reported as fine",
+      status.status != doctor_mod.PASS, f"{status.status}: {status.lines}")
+check("...it warns", status.status == doctor_mod.WARN, status.status)
+check("...naming the client that IS running",
+      any("Claude IS running" in l for l in status.lines), str(status.lines))
+check("...and the approval case, which is what actually happened",
+      any("Pending approval" in l for l in status.lines), str(status.lines))
+check("...and the restart case",
+      any("has not been restarted" in l for l in status.lines), str(status.lines))
+check("...and says PROOF alone does not cover this",
+      any("not that anything is running it" in l for l in status.lines),
+      str(status.lines))
+check("...while allowing that a different project open is innocent",
+      any("different project open" in l for l in status.lines), str(status.lines))
+
+# --- the state that is actually proven --------------------------------------
+status = live_status([(900, 1, CLIENT_CMD), (950, 900, PROXY_CMD)])
+check("a server running behind the proxy is a PASS",
+      status.status == doctor_mod.PASS, f"{status.status}: {status.lines}")
+check("...naming the pid, so the claim is checkable",
+      any("pid 950" in l for l in status.lines), str(status.lines))
+
+# The downstream child counts too: the proxy execs the real server, and it is
+# the child that carries the server's own command line.
+CHILD_CMD = (f"node /Users/x/.npm/_npx/abc/node_modules/"
+             f"@modelcontextprotocol/server-filesystem/dist/index.js {WS}")
+status = live_status([(900, 1, CLIENT_CMD), (950, 900, PROXY_CMD),
+                      (951, 950, CHILD_CMD)])
+check("...and a server process BEHIND a proxy counts, not just the proxy itself",
+      status.status == doctor_mod.PASS, f"{status.status}: {status.lines}")
+
+# --- no client running at all is not a finding ------------------------------
+status = live_status([(700, 1, "/usr/sbin/cfprefsd"), (701, 1, "/bin/zsh")])
+check("with no client running, this is a SKIP, not a warning",
+      status.status == doctor_mod.SKIP, f"{status.status}: {status.lines}")
+check("...saying there is nothing that could have connected",
+      any("could have connected" in l for l in status.lines), str(status.lines))
+
+# --- nothing routed here ----------------------------------------------------
+UNROUTED = clients.Detected(
+    client="Claude Code (project)", path=LAB / "proof" / ".mcp.json",
+    container=("mcpServers",),
+    servers={"filesystem": {"command": "npx", "args": ["-y", "server"]}})
+report = doctor_mod.Report()
+doctor_mod._check_server_live(report, [UNROUTED])
+check("a server that is not routed through Aegis is not this check's business",
+      report.checks[0].status == doctor_mod.SKIP, report.checks[0].status)
+
+# --- and the process table may be unreadable --------------------------------
+status = live_status(None)
+check("an unreadable process table warns rather than claiming either way",
+      status.status == doctor_mod.WARN
+      and any("could not read" in l for l in status.lines), str(status.lines))
+
+# --- client detection is strict ---------------------------------------------
+#
+# The first version of this check used CLIENT_HINTS, a substring match, against
+# the whole process table — and reported macOS's own CursorUIViewService as the
+# user's MCP client. Measured on this machine.
+check("an Apple XPC service is NOT mistaken for the user's editor",
+      doctor_mod._running_client([(1, 0, APPLE_CMD)], set()) == "",
+      doctor_mod._running_client([(1, 0, APPLE_CMD)], set()))
+for shape, cmd in (
+    ("a macOS app bundle", CLIENT_CMD),
+    ("a binary on PATH", "/Users/x/.local/bin/claude"),
+    ("the CLI's VERSION-numbered binary", "/Users/x/.local/share/claude/versions/2.1.258"),
+):
+    check(f"...but a real client is found as {shape}",
+          doctor_mod._running_client([(1, 0, cmd)], set()) != "", cmd)
+check("...and doctor's own processes are never counted as a client",
+      doctor_mod._running_client([(1, 0, CLIENT_CMD)], {1}) == "")
 
 
 # ---------------------------------------------------------------------------

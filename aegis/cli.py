@@ -162,14 +162,23 @@ def _run(argv: list[str]) -> int:
         "--print-profile", action="store_true",
         help="write the generated profile and print it; launch nothing",
     )
+    parser.add_argument(
+        "--verbose-denials", action="store_true",
+        default=os.environ.get("AEGIS_VERBOSE_DENIALS", "") not in ("", "0"),
+        help="print every kernel denial to stderr as it happens, even when the "
+             "child owns an interactive terminal. Off by default there because "
+             "the lines land on top of a full-screen client and make it "
+             "unreadable; the denials are written to the audit log and to a "
+             "rotating file either way. AEGIS_VERBOSE_DENIALS=1 does the same.",
+    )
     known, rest = parser.parse_known_args(argv)
     if "--" in rest:
         rest = rest[rest.index("--") + 1:]
     command = [a for a in rest if a]
 
     if not command and not known.print_profile:
-        print("usage: aegis run [--deny-all-network] -- <agent-command> [args...]",
-              file=sys.stderr)
+        print("usage: aegis run [--deny-all-network] [--verbose-denials] "
+              "-- <agent-command> [args...]", file=sys.stderr)
         return 64
 
     policy_path = default_policy_path()
@@ -215,13 +224,43 @@ def _run(argv: list[str]) -> int:
               "failure this command exists to prevent.", file=sys.stderr)
         return 3
 
+    # S9g. Whether per-denial lines go to the terminal while the child runs.
+    #
+    # They collide with a full-screen TUI: the client owns the alternate screen
+    # and repaints continuously, so each line lands mid-frame and one denied
+    # file can emit dozens in a turn. Suppressed only when there is actually a
+    # terminal to ruin — BOTH streams are checked, because that is what
+    # separates the two cases:
+    #
+    #   stderr is not a tty   output is redirected or piped. Nothing to
+    #                         interleave with; stream, as before.
+    #   stdin is not a tty    the child cannot be a full-screen interactive
+    #                         client, because such a client needs a terminal to
+    #                         read keys from. Stream.
+    #   both are ttys         a human is sitting in front of a program that may
+    #                         well be drawing on this screen. Write to the file.
+    #
+    # --verbose-denials (or AEGIS_VERBOSE_DENIALS=1) forces streaming back on;
+    # it was genuinely useful for debugging and is not being taken away.
+    #
+    # NOTHING about what is RECORDED changes. Every denial still becomes an
+    # audit row, on the same code path, before any of this is consulted.
+    interactive = sys.stderr.isatty() and sys.stdin.isatty()
+    stream_denials = known.verbose_denials or not interactive
+    denial_log = violations_mod.DenialLog()
+
     # S9b: start watching for kernel denials BEFORE the agent runs, or the
     # first thing it does is the thing we miss. Non-fatal — see Observer.
-    observer = violations_mod.Observer(box.document)
+    # S9j: the command is passed so the observer can recognise this session's
+    # own denials in a machine-wide log. Without it every sandbox's denials
+    # look alike and one session records another's.
+    observer = violations_mod.Observer(box.document, command=command)
     observation = observer.start()
 
     record("allow", "sandbox_established",
-           f"{box.summary()}; {observation.summary() if not observation.available else 'watching for kernel denials'}",
+           f"{box.summary()}; "
+           + (observation.summary() if not observation.available else
+              f"watching for kernel denials, attributed by {observation.attributed_by}"),
            [str(box.profile)])
 
     print(f"[aegis] {box.summary()}", file=sys.stderr)
@@ -231,8 +270,27 @@ def _run(argv: list[str]) -> int:
     if known.deny_all_network:
         print("[aegis] --deny-all-network: no domain is reachable, including "
               "the proxy's own egress path.", file=sys.stderr)
+    # S9e. Say it before the client starts, not after the user has spent ten
+    # minutes deciding their terminal is broken. Without the pty grant every
+    # ioctl on the tty is refused, so an interactive client cannot enter raw
+    # mode and its own input echoes back as literal escape sequences. Only
+    # worth saying when there IS a terminal to ruin.
+    if not box.document.get("allowPty") and sys.stdin.isatty():
+        print("[aegis] WARNING sandbox_pty is off in your policy and this is an "
+              "interactive terminal. A client started here cannot put the "
+              "terminal into raw mode, so keys and mouse movement will appear "
+              "as literal escape sequences. Set \"sandbox_pty\": true to fix it.",
+              file=sys.stderr)
     print("[aegis] Outside this boundary: an agent you start yourself, and a "
           "kernel escape. THREAT-MODEL.md §7.6 and §7.7.", file=sys.stderr)
+    if not stream_denials:
+        # Said once, before the child takes the screen. Without this the file
+        # is a place nobody knows to look.
+        print(f"[aegis] Kernel denials go to the audit log and to "
+              f"{denial_log.path} — this is an interactive terminal, so they "
+              f"are not printed here where they would land on top of your "
+              f"client. `tail -f` that file, or use --verbose-denials.",
+              file=sys.stderr)
 
     if known.print_profile:
         print(json.dumps(box.document, indent=2))
@@ -246,15 +304,28 @@ def _run(argv: list[str]) -> int:
         the distinction from a policy-engine denial is the whole point of the
         row. No schema change: the existing row_hash rule is untouched and this
         is simply a new rule_id.
+
+        The audit write happens first and unconditionally. Display is decided
+        afterwards and cannot skip it.
         """
         for violation in rows:
             # `sandbox:<process>` rather than the MCP-tool name this column
             # usually carries: the actor here is a process the kernel refused,
             # and the prefix keeps it from reading as a tool that exists.
-            record("deny", "sandbox_denied", violation.reason(), [violation.path],
+            # S9j. Two rule_ids, never one meaning two things. `sandbox_denied`
+            # keeps exactly the meaning it has always had and gains a guarantee
+            # it never had: the denial was this session's. A row that could not
+            # be attributed gets its own rule_id, so no reader of an old log
+            # and no reader of a new one is misled about which is which.
+            rule = ("sandbox_denied" if violation.attributed
+                    else "sandbox_denied_unattributed")
+            record("deny", rule, violation.reason(), [violation.path],
                    tool=f"sandbox:{violation.process}")
-            print(f"[aegis] kernel denied {violation.operation} "
-                  f"{violation.path} to {violation.process}", file=sys.stderr)
+            line = (f"kernel denied {violation.operation} "
+                    f"{violation.path} to {violation.process}(pid {violation.pid})")
+            denial_log.write(line)
+            if stream_denials:
+                print(f"[aegis] {line}", file=sys.stderr)
 
     wrapped = box.wrap(command)
     code = 3
@@ -285,6 +356,15 @@ def _run(argv: list[str]) -> int:
            f"{violations_mod.NETWORK_NOT_OBSERVABLE}",
            [str(box.profile)])
     print(f"[aegis] {observation.summary()}", file=sys.stderr)
+    if not stream_denials and denial_log.written:
+        print(f"[aegis] {denial_log.written} denial line(s) were written to "
+              f"{denial_log.path} rather than to this terminal.", file=sys.stderr)
+    if denial_log.error:
+        # The audit log has them regardless; say which one is incomplete rather
+        # than letting an empty file imply nothing happened.
+        print(f"[aegis] WARNING the denial log could not be written "
+              f"({denial_log.error}). The audit log is unaffected and remains "
+              f"the record; {denial_log.path} is incomplete.", file=sys.stderr)
     store.close()
     return code
 

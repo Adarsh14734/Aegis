@@ -1,0 +1,171 @@
+S9e — why a client under `aegis run` echoes its own escape sequences
+================================================================================
+
+Captured on macOS 25.5.0 (Darwin), 2026-09-02, with
+@anthropic-ai/sandbox-runtime (`srt`) and Claude Code v2.1.258.
+
+THE REPORT
+
+  `aegis run -- ~/.local/bin/claude`, then move the mouse. The prompt fills
+  with `^[[<65;63;22M`. Running the client directly never does it.
+
+A previous investigation dismissed this as unrelated to the sandbox on two
+grounds, both of which were wrong:
+
+  - "startup captures with the network open and closed were identical" — true,
+    and irrelevant: the cause is not the network.
+  - "it emits ?1004h but never ?1006h/?1002h" — simply a bad capture. §4 below
+    shows the client emitting 1000, 1002, 1003 and 1006 every time.
+
+The user's correction was right: `^[[<65;63;22M` is SGR mouse reporting and
+cannot appear unless 1006 was enabled.
+
+
+1. THE SPAWN IS NOT THE CAUSE
+--------------------------------------------------------------------------------
+
+`aegis run` does, in cli.py:
+
+    child = subprocess.Popen(wrapped, env=child_env)
+
+with no stdin/stdout/stderr redirection, so the child inherits the real
+terminal. There is no pipe to lose the tty to, and adding a pty proxy would
+not have helped: the child's tcsetattr would be made on the proxy pty and
+refused for exactly the same reason as below.
+
+Measured through a real pty, made a controlling terminal with TIOCSCTTY:
+
+                         direct         aegis run      srt alone
+    isatty(0)            true           true           true
+    tty device           /dev/ttys001   /dev/ttys001   /dev/ttys001
+    /dev/tty opens       yes            yes            yes
+    tcgetpgrp            12555          EPERM          EPERM
+    tcsetattr(raw)       applied        EPERM          EPERM
+    stty -a              full output    (nothing)      (nothing)
+
+`aegis run` and `srt` alone are identical. Whatever this is, it is not
+something `aegis run` does to the process it spawns.
+
+It is also EPERM, not ENOTTY. A job-control problem — background process
+group, no controlling terminal — produces SIGTTOU or EIO, never EPERM.
+
+
+2. THE EXACT DENIED OPERATION
+--------------------------------------------------------------------------------
+
+    $ srt -s <profile> -c 'stty -a; echo STTY_RC=$?'
+    stty: TIOCGETD: Operation not permitted
+    STTY_RC=1
+
+Reproduced outside srt entirely, with sandbox-exec given a profile that
+refuses ioctl:
+
+    no sandbox                       TTY_IOCTL_OK      speed 9600 baud; 44 rows
+    sandbox-exec, allow default      TTY_IOCTL_OK      speed 9600 baud; 44 rows
+    sandbox-exec, refusing ioctl     TTY_IOCTL_DENIED  stty: TIOCGETD: Operation
+                                                       not permitted
+
+Note that nothing appears in the macOS unified log for this: a `log stream`
+filtered on "Sandbox:" recorded zero denials across the whole window. So this
+class of failure is invisible to aegis/violations.py as well as to the user.
+
+
+3. WHERE THE RULE LIVES
+--------------------------------------------------------------------------------
+
+@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js:717
+
+    if (allowPty) {
+        ... pseudo-tty access, plus ioctl and read/write on /dev/ptmx and
+            /dev/ttys* ...
+    }
+
+and sandbox-config.js:929 declares `allowPty` as an OPTIONAL TOP-LEVEL BOOLEAN
+of the settings document — the same document aegis/sandbox.py generates.
+Aegis never set it, so it defaulted to false and every terminal ioctl was
+refused.
+
+With the key added, through the same pty harness:
+
+    allowPty ABSENT   raw_applied False   raw_error EPERM   stty: (nothing)
+    allowPty TRUE     raw_applied True    raw_error None    stty: speed 9600 baud...
+                      in_foreground True  fg_pgrp 12757
+
+
+4. WHY THE MOUSE
+--------------------------------------------------------------------------------
+
+Claude Code started inside the sandbox, private modes it wrote, both ways:
+
+    allowPty ABSENT   1000h 1002h 1003h 1004h 1006h 1049h 2004h 2031h 25h 25l
+    allowPty TRUE     1000h 1002h 1003h 1004h 1006h 1049h 2004h 2031h 25h 25l
+
+Identical, because enabling mouse reporting is OUTPUT — a write to stdout,
+which the sandbox never restricted. Entering raw mode is an IOCTL, which it
+did. So the client asks the terminal to report mouse movement, and then cannot
+put the terminal into a mode where it can consume the reports. The tty driver
+is left in canonical+echo and echoes them into the input line as text.
+
+Node's setRawMode failure is swallowed by Ink, so there is no error message
+anywhere. That is why this looked like a terminal problem rather than a
+sandbox setting.
+
+
+5. WHAT THE GRANT COSTS
+--------------------------------------------------------------------------------
+
+Every S9 §3 kernel claim, re-run under the SAME policy with allowPty off and
+on:
+
+    claim                              allowPty off   allowPty on
+    ssh key unreadable                 held           held
+    ...unreadable via python           held           held
+    .env in workspace unreadable       held           held
+    write inside workspace works       held           held
+    write outside roots fails          held           held
+    policy.json unwritable             held           held
+    network closed                     held           held
+
+    filesystem section identical: True
+    network section identical:    True
+    keys added:                   {'allowPty'}
+
+It is still a real capability: a process inside can open another terminal
+owned by the same user. An unsandboxed agent could already do that, so this
+declines to add a protection rather than removing one — but that is a
+distinction, not an absence.
+
+
+6. AN UNRELATED FINDING, RECORDED BECAUSE IT WAS MEASURED HERE
+--------------------------------------------------------------------------------
+
+The violations observer reads the MACHINE-WIDE unified log and attributes a
+denial to the running session whenever the denied path matches a deny pattern
+in that session's profile. It does not check process ancestry. So a single
+`aegis run` session records denials caused by entirely different sessions.
+
+Measured: with one `aegis run -- claude` open, running tests/s9.py added 10
+rows to the operator's real audit.db, with paths inside the test suite's lab:
+
+    239|sandbox:cat|sandbox_denied|the kernel refused file-read-data on /private/var/folders/xk...
+    242|sandbox:curl|sandbox_denied|the kernel refused file-read-data on /private/etc/ssl/cert.p...
+
+This is why tests/s9c.py reports "the operator's real Aegis state is untouched"
+as a failure while any `aegis run` session is open. It is not a flake in the
+suite, and an earlier report calling it transient was wrong.
+
+The row's claim — "a path this policy denies was denied by the kernel" — is
+true. The implied claim, that this session's agent did it, is not established.
+Filed, not fixed: it changes what the audit log means and deserves its own
+sprint rather than a fix in passing.
+
+
+7. WHAT THIS FILE DOES NOT ESTABLISH
+--------------------------------------------------------------------------------
+
+  - That every TUI is now correct under `aegis run`. What is established is
+    that raw mode can be entered, which is the precondition all of them need.
+    The client's own behaviour past that point was not exercised.
+
+  - Anything about Linux. The pty rules measured here are Seatbelt's; the
+    bubblewrap path was not tested on this machine.

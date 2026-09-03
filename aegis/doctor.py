@@ -553,6 +553,34 @@ def _check_sandbox(report: Report, policy, launch_wrapped: bool = False) -> None
 
     matches, wanted = sandbox_mod.matches_policy(policy)
     path = sandbox_mod.profile_path()
+    # Named, not counted. "3 domains reachable" is not something anyone can
+    # check; the hosts are, and the whole point of an allowlist is that a
+    # person can read it.
+    generated = sandbox_mod.profile_from_policy(policy)
+    # S9e. Invisible until it bites, and then it looks like a broken terminal
+    # rather than a sandbox setting — so doctor says it either way.
+    pty_line = (
+        "interactive clients can drive the terminal (sandbox_pty)"
+        if generated.get("allowPty") else
+        "sandbox_pty is OFF: a client started with `aegis run` cannot put the "
+        "terminal into raw mode, so its keys and mouse movement will echo as "
+        "literal escape sequences. Correct for a headless run, wrong for a "
+        "terminal."
+    )
+    state_paths = [str(s) for s in getattr(policy, "sandbox_state_paths", ())]
+    state_line = (
+        "the client may write its own state at: " + ", ".join(state_paths)
+        if state_paths else
+        "no client state directory is writable — a wrapped client cannot keep "
+        "its own tokens, transcripts or session state"
+    )
+    reachable = generated["network"]["allowedDomains"]
+    net_line = (
+        "reachable hosts inside the sandbox: " + ", ".join(reachable)
+        if reachable else
+        "no host is reachable inside the sandbox — every outbound connection "
+        "from the agent's process tree is refused"
+    )
     if not path.exists():
         report.add(
             "OS sandbox (C11)", WARN,
@@ -560,6 +588,9 @@ def _check_sandbox(report: Report, policy, launch_wrapped: bool = False) -> None
             f"no profile written yet at {path} — `aegis run` generates one on "
             f"each launch, so this only means the sandbox has not been used.",
             f"the profile this policy would generate has digest {wanted[:16]}",
+            net_line,
+            pty_line,
+            state_line,
             always,
         )
     elif matches:
@@ -567,6 +598,9 @@ def _check_sandbox(report: Report, policy, launch_wrapped: bool = False) -> None
             "OS sandbox (C11)", PASS,
             f"runtime present: {runtime}",
             f"profile {path} matches the current policy (digest {wanted[:16]})",
+            net_line,
+            pty_line,
+            state_line,
             always,
         )
     else:
@@ -575,12 +609,133 @@ def _check_sandbox(report: Report, policy, launch_wrapped: bool = False) -> None
             f"runtime present: {runtime}",
             f"the profile at {path} does NOT match the current policy.",
             f"policy would generate digest {wanted[:16]}.",
-            "The policy has been edited since that profile was written. "
-            "`aegis run` regenerates it on every launch, so a live session is "
-            "not affected — but anything reading this file, or a stale copy "
-            "used by hand, describes rules the policy no longer states.",
+            # "The policy has been edited" was the only explanation offered,
+            # and it is not the only cause: upgrading Aegis changes what a
+            # given policy generates, which is exactly what S9e's allowPty did
+            # to every profile written before it. Naming one cause when there
+            # are two sends people to look at a file that never changed.
+            "Either the policy has been edited, or Aegis now generates a "
+            "different profile from the same policy, since that file was "
+            "written. `aegis run` regenerates it on every launch, so a live "
+            "session is not affected — but anything reading this file, or a "
+            "stale copy used by hand, describes rules the policy no longer "
+            "states.",
+            net_line,
+            pty_line,
+            state_line,
             always,
         )
+
+
+def _check_sandbox_network(report: Report, policy, launch_wrapped: bool) -> None:
+    """S9d. The combination that makes a wrapped client unusable.
+
+    A wrapper routes the client's launch through `aegis run`; the sandbox
+    starts with no reachable hosts; so a client wrapped against an empty
+    allowlist cannot reach its own API and does not work. That was the reported
+    failure, and nothing in this report said so — the sandbox check passed,
+    because the profile matched the policy exactly. It was a correct profile
+    for an unusable configuration.
+
+    Reported only when the launch IS wrapped. An empty allowlist is the right
+    default for a client that is not sandboxed, and warning about it there
+    would be noise on every clean install.
+    """
+    if policy is None or not launch_wrapped:
+        return
+    from . import launcher as launcher_mod
+    from . import sandbox as sandbox_mod
+
+    reachable = sandbox_mod.profile_from_policy(policy)["network"]["allowedDomains"]
+    if reachable:
+        report.add(
+            "Wrapped client can reach its own API", PASS,
+            "reachable from inside the sandbox: " + ", ".join(reachable),
+            "The sandbox cannot tell the client's request from its Bash tool's, "
+            "so everything in the tree can reach these hosts too. That residual "
+            "is the reason this list should stay as short as the client allows.",
+        )
+        return
+
+    missing = []
+    for name, _label, _real in launcher_mod.detect_clients():
+        for host, purpose, required in launcher_mod.client_endpoints(name):
+            if required:
+                missing.append(f"{host} — {purpose}")
+    report.add(
+        "Wrapped client can reach its own API", FAIL,
+        "your client's launch is routed through the sandbox, and the sandbox "
+        "grants NO reachable hosts.",
+        "So the client starts and then cannot work: it cannot reach its own "
+        "API. Symptoms are 'Session creation failed' and 'Auto-update failed', "
+        "not an Aegis error message, which is why this is easy to blame on the "
+        "client.",
+        *(["It needs: " + "; ".join(missing)] if missing else []),
+        "Fix it by re-running `aegis init` and accepting the endpoint step, or "
+        "by adding those hosts to `sandbox_domains` in your policy. "
+        "`sandbox_domains` is read only by the sandbox — it does not widen the "
+        "agent's own egress allowlist.",
+        "Or remove the wrapper with `aegis uninstall` if you would rather run "
+        "the client unsandboxed.",
+    )
+
+
+def _check_sandbox_state(report: Report, policy, launch_wrapped: bool) -> None:
+    """S9f. The other combination that makes a wrapped client unusable.
+
+    Same shape as the network check: the profile is correct, matches the
+    policy, and describes a client that starts and then fails every request
+    because it cannot write its own state. The user sees a 401 and an EPERM
+    and has no reason to connect either to a sandbox setting.
+    """
+    if policy is None or not launch_wrapped:
+        return
+    from . import launcher as launcher_mod
+
+    granted = {str(s) for s in getattr(policy, "sandbox_state_paths", ())}
+    protected = {str(s) for s in getattr(policy, "sandbox_state_protect", ())}
+    missing: list[str] = []
+    for name, _label, _real in launcher_mod.detect_clients():
+        for path, purpose, required in launcher_mod.client_state_paths(name):
+            if required and str(Path(path).expanduser()) not in granted:
+                missing.append(f"{path} — {purpose}")
+
+    if missing:
+        report.add(
+            "Wrapped client can write its own state", FAIL,
+            "your client's launch is routed through the sandbox, and the "
+            "sandbox grants it nowhere to keep its own state.",
+            "So it starts and then cannot work. For Claude Code that is "
+            "'API Error: 401 OAuth access token has expired' on every request "
+            "and 'Transcript writes are failing' — neither of which looks like "
+            "an Aegis problem, which is why this check exists.",
+            "It needs: " + "; ".join(missing),
+            "Fix it by re-running `aegis init` and accepting the state-path "
+            "step, or by adding those paths to `sandbox_state_paths`. Aegis "
+            "refuses a policy that names your home directory there.",
+        )
+        return
+
+    if not granted:
+        return
+    lines = ["writable state: " + ", ".join(sorted(granted))]
+    if protected:
+        lines.append("kept read-only inside it: " + ", ".join(sorted(protected))
+                     + " — writing those is code execution or credential theft, "
+                     "not state")
+    else:
+        lines.append(
+            "NOTHING is carved back out of that grant. A client's state "
+            "directory usually holds files whose contents are executed "
+            "(hooks, plugins) or are credentials; `aegis init` lists them in "
+            "sandbox_state_protect. An empty list means anything in the "
+            "sandboxed tree can rewrite them.")
+    lines.append(
+        "Everything in the sandboxed tree can write there, not only the client "
+        "— the sandbox cannot tell them apart. Reading was never restricted. "
+        "THREAT-MODEL.md §7.11.")
+    report.add("Wrapped client can write its own state",
+               PASS if protected else WARN, *lines)
 
 
 def _check_wiring(
@@ -598,13 +753,41 @@ def _check_wiring(
         for name in det.unwrapped_servers():
             loose.append(f"{name} ({det.path})")
 
-    if not found:
-        report.add(
-            "MCP configuration points at the proxy", FAIL,
-            f"no MCP server configuration found for {project}",
+    # S9h. "No MCP server is configured" is not a failure.
+    #
+    # It used to be reported as one, and a red FAIL on a clean install reads as
+    # broken software. It is a perfectly ordinary state: someone who wants the
+    # kernel sandbox and no MCP mediation has nothing here to route, and
+    # nothing is wrong with them. The distinction that matters is the one
+    # between HAVING NOTHING and HAVING SOMETHING UNPROTECTED —
+    #
+    #   no server configured anywhere   nothing to route. SKIP, and say what is
+    #                                   and is not covered as a result.
+    #   servers configured, none wrapped  every tool call they receive is
+    #                                   unmediated and unrecorded. Still FAIL.
+    #
+    # `found` is the config FILES; a file can exist with no servers in it, and
+    # that is the same "nothing to route" state, so the test is on the servers.
+    configured = sum(len(det.servers) for det in found)
+    if not configured:
+        where = (
             "Looked in: "
-            + ", ".join(str(p) for _, p, _ in clients.candidate_locations(project)),
-            "Run `aegis init` in the project directory.",
+            + ", ".join(str(p) for _, p, _ in clients.candidate_locations(project))
+            if not found else
+            "Found configuration at "
+            + ", ".join(str(det.path) for det in found)
+            + ", with no MCP servers in it."
+        )
+        report.add(
+            "MCP configuration points at the proxy", SKIP,
+            f"no MCP server is configured for {project}, so there is nothing "
+            f"for the proxy to sit in front of.",
+            where,
+            "This is not a problem. The OS sandbox below still applies to "
+            "everything a wrapped client runs — it does not depend on MCP at "
+            "all. What you do not have is MCP-layer mediation, because you "
+            "have no MCP servers.",
+            "Run `aegis init` in a project directory if you add one later.",
         )
         return wired, found
 
@@ -740,6 +923,183 @@ def _client_hint(chain: list[int], cmd: dict[int, str]) -> str:
     return ""
 
 
+# Names doctor will accept as "an MCP client is running".
+#
+# Deliberately NOT CLIENT_HINTS. That list is a loose substring match, which is
+# right where it is used — walking the ANCESTRY of a process already known to be
+# a configured server, where a near miss costs nothing. Applied to the whole
+# process table it is wrong: macOS ships `CursorUIViewService`, an input-method
+# helper with nothing to do with the Cursor editor, and a substring match
+# reports it as the user's MCP client. Measured on this machine, which is how
+# the first version of this check came to name it.
+CLIENT_PROCESS_NAMES = ("claude", "cursor", "windsurf", "cline")
+
+
+def _running_client(table: list[tuple[int, int, str]], mine: set[int]) -> str:
+    """The name of a running MCP client, or "".
+
+    Matched on the executable path, in the three shapes a client actually takes:
+    a macOS app bundle, a binary on PATH, and the CLI's versioned binary under
+    ~/.local/share, whose basename is a VERSION NUMBER rather than a name
+    (`.../share/claude/versions/2.1.258`) — which is also why an obvious
+    basename check finds nothing.
+    """
+    for pid, _, cmd in table:
+        if pid in mine:
+            continue
+        exe = cmd.split()[0] if cmd.split() else ""
+        low = exe.lower()
+        base = low.rsplit("/", 1)[-1]
+        for name in CLIENT_PROCESS_NAMES:
+            if (f"/{name}.app/contents/macos/" in low
+                    or base == name
+                    or f"/share/{name}/versions/" in low):
+                return exe.rsplit("/", 1)[-1]
+    return ""
+
+
+def _check_server_live(report: Report, found: list[clients.Detected]) -> None:
+    """S9i. Is a routed server actually RUNNING behind the proxy right now?
+
+    The gap this closes was found by the first end-to-end verification of the
+    MCP layer on a real installation. Every check went green —
+
+        [  ok  ] MCP configuration points at the proxy
+        [  ok  ] No client is still running the old wiring
+        [  ok  ] PROOF: a real tool call is denied and recorded
+
+    — while `claude mcp list` said the server was `Pending approval` and the
+    client had therefore never connected to it. Nothing was mediated at all.
+
+    Both green checks were green for the wrong reason:
+
+      PROOF launches the server ITSELF. It proves the proxy works when run. It
+      says nothing about whether the client is using it, because there is no
+      client in that test.
+
+      "No client is still running the old wiring" looks for a process running
+      the UNWRAPPED command. A server nobody launched is not running at all, so
+      that check passes vacuously — the strongest possible pass for the weakest
+      possible reason.
+
+    So this asks the complementary question, in the same evidence class S9c
+    settled on for the launch wrapper: resolution, not configuration. A wrapper
+    nobody's PATH reaches is a file; a server config nobody's client launched
+    is a file too.
+
+    WHY THIS IS A WARN AND NOT A FAIL
+
+    `.mcp.json` is project-scoped. A user running `aegis doctor` here while
+    their client has a different project open is in a completely ordinary
+    state, and so is a user with no client running at all. Neither is a
+    misconfiguration, and a red FAIL on either is the S9h mistake again. So:
+
+      no client process visible   SKIP. Nothing to have connected.
+      client running, no server   WARN naming both innocent and real causes.
+      server running behind proxy PASS — the one state that is actually proven.
+    """
+    wrapped: list[tuple[str, Path, list[str]]] = []
+    for det in found:
+        for name in det.wrapped_servers():
+            entry = det.servers[name]
+            downstream = clients.unwrap_entry(entry)
+            if not isinstance(downstream, dict) or not downstream.get("command"):
+                continue
+            tokens = _fingerprint(_entry_argv(downstream))
+            if tokens:
+                wrapped.append((name, det.path, tokens))
+
+    if not wrapped:
+        report.add(
+            "A routed server is actually connected", SKIP,
+            "no server is routed through the proxy here, so there is nothing "
+            "that could be connected.",
+        )
+        return
+
+    table = _process_table()
+    if table is None:
+        report.add(
+            "A routed server is actually connected", WARN,
+            "could not read the process table, so this was not checked.",
+            "A configuration that names the proxy is not evidence that any "
+            "client has launched it.",
+        )
+        return
+
+    parent = {pid: ppid for pid, ppid, _ in table}
+    cmdline = {pid: cmd for pid, _, cmd in table}
+    # Doctor's own probe spawns exactly the process this check looks for, so
+    # its ancestry is excluded. This check also runs BEFORE the probe, for the
+    # same reason _check_stale_clients does.
+    mine = {os.getpid(), *_ancestry(os.getpid(), parent, cmdline)}
+
+    live: list[str] = []
+    missing: list[tuple[str, Path]] = []
+    for name, path, tokens in wrapped:
+        hit = None
+        for pid, _, cmd in table:
+            if pid in mine or not _matches(cmd, tokens):
+                continue
+            behind_proxy = _is_proxy_cmdline(cmd) or any(
+                _is_proxy_cmdline(cmdline.get(a, "")) for a in _ancestry(pid, parent, cmdline)
+            )
+            if behind_proxy:
+                hit = (pid, cmd)
+                break
+        if hit:
+            client = _client_hint(_ancestry(hit[0], parent, cmdline), cmdline)
+            live.append(f"'{name}' is running behind the proxy (pid {hit[0]})"
+                        + (f", launched by {client}" if client else ""))
+        else:
+            missing.append((name, path))
+
+    if not missing:
+        report.add(
+            "A routed server is actually connected", PASS,
+            *live,
+            "A client has launched this server through Aegis, so its tool calls "
+            "are crossing the proxy right now. This is the only check here that "
+            "shows the configuration is in USE rather than merely correct.",
+        )
+        return
+
+    client_running = _running_client(table, mine)
+    names = ", ".join(f"'{n}' ({p})" for n, p in missing)
+
+    if not client_running:
+        report.add(
+            "A routed server is actually connected", SKIP,
+            f"not running: {names}",
+            "No MCP client appears to be running, so there is nothing that "
+            "could have connected to it. Start your client and run `aegis "
+            "doctor` again if you want this confirmed.",
+            *live,
+        )
+        return
+
+    report.add(
+        "A routed server is actually connected", WARN,
+        f"not running: {names}",
+        f"but {client_running} IS running, and has not launched that server "
+        f"through Aegis.",
+        "If your client has a different project open, this is nothing — "
+        "`.mcp.json` is per-project and it would not load this one.",
+        "Otherwise the server is configured and NOT in use, which means its "
+        "tool calls are not being mediated at all. Two things cause that:",
+        "  - the client has not been restarted since `aegis init` changed the "
+        "configuration, or",
+        "  - the client is waiting for you to APPROVE the changed command. "
+        "Claude Code holds project-scoped servers at 'Pending approval' until "
+        "you accept them, and `aegis init` changes the command, so a server you "
+        "approved before may need approving again. Run `claude mcp list` to "
+        "see, or open the client and accept it.",
+        "Until then the PROOF check above shows only that the proxy works when "
+        "run — not that anything is running it.",
+        *live,
+    )
+
+
 def _check_stale_clients(report: Report, found: list[clients.Detected]) -> None:
     """Gap 9 from S7: a correct config proves nothing about a running client.
 
@@ -857,8 +1217,20 @@ def _pick_probe(policy: Policy, cwd: Path) -> tuple[str, str, str, str] | None:
 
 
 def _check_live(
-    report: Report, policy: Policy, db: Path, wired: list, project: Path, timeout: float
+    report: Report, policy: Policy, db: Path, wired: list, project: Path,
+    timeout: float, configured: int = 1
 ) -> None:
+    # S9h. Same distinction as the wiring check, for the same reason: a probe
+    # that was never possible is not a probe that failed.
+    if not wired and not configured:
+        report.add(
+            "PROOF: a real tool call is denied and recorded", SKIP,
+            "not attempted — there is no MCP server to send a probe through.",
+            "This proves nothing about the MCP layer, because you are not "
+            "using one. It says nothing either way about the OS sandbox, which "
+            "is reported above and does not depend on MCP.",
+        )
+        return
     if not wired:
         report.add(
             "PROOF: a real tool call is denied and recorded", FAIL,
@@ -1097,11 +1469,17 @@ def main(argv: list[str] | None = None) -> int:
     _check_policy_freshness(report)
     launch_wrapped = _check_launch(report)
     _check_sandbox(report, policy, launch_wrapped)
+    _check_sandbox_network(report, policy, launch_wrapped)
+    _check_sandbox_state(report, policy, launch_wrapped)
 
     # Before the probe, not after: the probe launches its own copy of the
     # configured command, and a check that scans the process table has no
     # business running while doctor's own children are in it.
     _check_stale_clients(report, found)
+    # Same placement and the same reason: the probe below spawns a proxied
+    # server of its own, and a process-table check has no business running
+    # while doctor's own children are in the table.
+    _check_server_live(report, found)
 
     if args.no_probe:
         report.add(
@@ -1115,7 +1493,8 @@ def main(argv: list[str] | None = None) -> int:
             "not attempted — there is no loadable policy to predict a denial from.",
         )
     else:
-        _check_live(report, policy, db, wired, project, args.timeout)
+        _check_live(report, policy, db, wired, project, args.timeout,
+                    configured=sum(len(det.servers) for det in found))
 
     report.render()
 

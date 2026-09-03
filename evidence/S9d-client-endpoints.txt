@@ -1,0 +1,134 @@
+S9d — which hosts a wrapped client actually needs, and what happens without them
+================================================================================
+
+Captured on macOS 25.5.0 (Darwin), 2026-09-02, with
+@anthropic-ai/sandbox-runtime (`srt`) and Claude Code v2.1.258.
+
+WHY THIS FILE EXISTS
+
+`aegis init` writes `allowed_domains: []`. sandbox.py turns that into
+`allowedDomains: []`, and the sandbox then grants ZERO reachable hosts. S9c
+made the launch wrapper the recommended path, so accepting the recommendation
+made the client unusable. This file is the measurement behind the fix: the
+endpoint table in aegis/launcher.py names only hosts that appear below.
+
+Nothing here is read off a documentation page, and nothing is inferred from
+`strings` on the binary — that produces ~40 hostnames, most of which are
+documentation links and third-party integrations the client never dials.
+
+
+1. THE MECHANISM: an empty allowlist refuses the CONNECT
+--------------------------------------------------------------------------------
+
+profile: {"network": {"allowedDomains": [], "deniedDomains": []}}
+
+    $ srt -s empty.json -c 'curl -sS -o /dev/null -w "http=%{http_code}\n" \
+          -m 12 https://api.anthropic.com/v1/messages'
+    curl: (56) CONNECT tunnel failed, response 403
+    http=000
+
+profile: {"network": {"allowedDomains": ["api.anthropic.com"], ...}}
+
+    $ srt -s anthropic.json -c 'curl ... https://api.anthropic.com/v1/messages'
+    http=405
+
+405 is the API answering a GET on a POST-only route: the request arrived. The
+refusal is made by the runtime's own loopback proxy, not by the kernel — which
+is why it never appears in the unified log that aegis/violations.py reads.
+
+
+2. srt DOES NAME THE DENIED HOST — under -d, on its own stderr
+--------------------------------------------------------------------------------
+
+    $ srt -d -s empty.json -c 'curl ... https://api.anthropic.com/...'
+    [SandboxDebug] Mux proxy (HTTP+SOCKS) listening on localhost:49449
+      "allowedHosts": []
+    [SandboxDebug] [Sandbox macOS] Applied restrictions - network: true, ...
+    [SandboxDebug] No matching config rule, denying: api.anthropic.com:443
+    [SandboxDebug] Connection blocked to api.anthropic.com:443
+
+This narrows a claim in aegis/violations.py's docstring. That module reads the
+macOS unified log, where a domain refusal genuinely does not appear and a raw
+socket denial carries only `remote:*:443`. Both statements stay true of the
+kernel log. They are NOT true of the runtime's debug stream, which names the
+host and the port. Recording blocked destinations from that stream is possible
+and is not done today.
+
+
+3. WHAT CLAUDE CODE IS DENIED, WITH NOTHING ALLOWED
+--------------------------------------------------------------------------------
+
+`claude --version; claude update`, allowedDomains: []
+
+    [SandboxDebug] ... denying: api.anthropic.com:443
+    [SandboxDebug] ... denying: downloads.claude.ai:443            (x6)
+    Error: Failed to install native update
+    TelemetrySafeError: Failed to fetch version from
+      https://downloads.claude.ai/claude-code-releases/latest after 3
+      attempt(s): proxy refused the connection
+    [SandboxDebug] ... denying: http-intake.logs.us5.datadoghq.com:443
+
+An interactive start, from a trusted directory so no prompt blocks it:
+
+    denied, by count:
+       20  api.anthropic.com:443
+        2  http-intake.logs.us5.datadoghq.com:443
+
+    on screen:
+      /rc connecting...
+      ⏺ Remote Control disconnected — Session creation failed — see debug log
+        — run /remote-control to reconnect
+      /rc failed
+
+This is the reported failure, reproduced. `api.anthropic.com` is refused twenty
+times during one start.
+
+
+4. THE SAME START, WITH TWO HOSTS ALLOWED
+--------------------------------------------------------------------------------
+
+allowedDomains: ["api.anthropic.com", "downloads.claude.ai"]
+
+    denied, by count:
+        4  mcp-proxy.anthropic.com:443
+        2  http-intake.logs.us5.datadoghq.com:443
+
+    on screen:
+      /rc active
+      ⚠ 2 MCP servers need authentication · run /mcp
+
+Zero api.anthropic.com refusals. Remote Control connects. The session works.
+
+`mcp-proxy.anthropic.com` only appears once a session gets far enough to reach
+hosted MCP connectors — it was invisible in run 3 because that session never
+got there. The session is fully functional without it, so the table marks it
+optional and says what it is for.
+
+
+5. WHAT IS DELIBERATELY NOT GRANTED
+--------------------------------------------------------------------------------
+
+  http-intake.logs.us5.datadoghq.com — the client's telemetry sink. Refused in
+  every run above, including the one where everything worked. Not needed to
+  function, third-party, and opening a diagnostics route out of a sandbox
+  somebody installed to reduce their exposure is not a default to pick for
+  them. `aegis init` names it so the denial is not a mystery.
+
+  Anything for cursor, windsurf or cline. Not measured on this machine.
+  Inventing plausible hostnames for a security allowlist is how an allowlist
+  stops meaning anything; those clients get an empty list and a sentence.
+
+
+6. WHAT THIS FILE DOES NOT ESTABLISH
+--------------------------------------------------------------------------------
+
+  - That the list is complete for every Claude Code feature. It is complete for
+    a session start, Remote Control, and the update check, measured. A feature
+    not exercised in these runs may dial something else; the runtime names it
+    when it does, which is how this list was built and how it can be extended.
+
+  - Anything about the reported mouse escape sequences (^[[<65;184;57M).
+    Captured startup with and without network: both emit \x1b[?1004h (focus
+    events) and neither emits ?1002h/?1006h, which is what an SGR wheel report
+    requires. Identical with the network open and closed, so the allowlist is
+    not the cause. Not reproduced here; still open.

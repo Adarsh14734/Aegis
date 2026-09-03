@@ -1,0 +1,172 @@
+S9j — whose denial is this?
+================================================================================
+
+Captured 2026-09-03 on macOS 25.5.0, with @anthropic-ai/sandbox-runtime (`srt`).
+
+THE CLAIM THAT WAS NOT ESTABLISHED
+
+Since S9b a kernel denial became a `sandbox_denied` row whenever the denied
+path matched a deny pattern in this session's profile. Nothing checked that
+this session's process tree was what the kernel refused. The macOS unified log
+is machine-wide, so one `aegis run` session recorded denials caused by any
+other sandbox — including a test suite's.
+
+The row's claim, "a path this policy denies was denied by the kernel", was
+true. The implied claim, "this session's agent did it", was never established.
+For a product whose central claim is a tamper-evident audit log, that is the
+wrong kind of imprecision.
+
+
+1. REPRODUCED
+--------------------------------------------------------------------------------
+
+Session A: `aegis run -- bash -c 'sleep 22'`. It touches nothing.
+Session B: a separate `srt` using A's profile, reading a denied ssh key.
+
+    BEFORE — today's code
+      session A ran `bash -c 'sleep 22'` and touched nothing
+      rows attributed to A: 1
+         sandbox_denied  id_rsa
+      chain: AEGIS-VERIFY-VERDICT: intact
+
+Session A's audit log contains a denial session A did not cause.
+
+
+2. PID ANCESTRY DOES NOT WORK — MEASURED BEFORE BUILDING ANYTHING
+--------------------------------------------------------------------------------
+
+The obvious idea: the violation line carries a pid, `aegis run` knows the pid
+it launched, walk from one to the other.
+
+    the sandboxed command finished 0.10s after it started
+    the denied process was pid 10531
+    still in the process table ~6s later (when the observer drains)? False
+
+The line had not even reached `log stream` by the time the process exited. Every
+short-lived denial — `cat`, `curl`, an interpreter startup, which is most of
+them — would be unattributable, and pid reuse makes the residual worse rather
+than better. Rejected on evidence, not taste.
+
+
+3. THE ANCHOR THAT ALREADY EXISTS
+--------------------------------------------------------------------------------
+
+The runtime tags every rule it emits with a per-invocation string:
+
+    (deny default (with message "CMD64_<base64>_END_<suffix>_SBX"))
+
+and macOS prints that tag on its OWN line, directly after the violation:
+
+    Sandbox: cat(10178) deny(1) file-read-data /…/attrib/lab/secrets/.ssh/id_rsa
+    CMD64_Y2F0IC9wcml2YXRlL3RtcC9jbGF1ZGUtNTAxLy1Vc2Vycy1hZGFyc2gt…_END__srv5ti0e3_SBX
+
+The base64 decodes to the sandboxed command. Measured properties:
+
+  - `--style compact`, which aegis/violations.py ALREADY uses, carries it. The
+    parser was discarding the line. This is a parser change, not a capture
+    change.
+  - The pairing is a strict alternation: violation, tag, violation, tag —
+    captured as `..vTvTvTvTvT.`
+  - Denials from outside any sandbox-runtime session carry no tag at all.
+  - Two concurrent sandboxes denying THE SAME FILE produce different tags:
+
+        head(10401)  encodes 'head -c 5 /private/tmp/…'   suffix _nnyujp6gp_SBX
+        cat(10402)   encodes 'sleep 4; cat /private/tmp/…' suffix _eqe5pnpv8_SBX
+
+    That is the reported bug, and the discriminator for it, in one capture.
+
+The suffix is `Math.random()` per runtime invocation and is NOT predicted. The
+command half is, because Aegis chose the command.
+
+
+4. TWO BUGS FOUND WHILE BUILDING THE FIX
+--------------------------------------------------------------------------------
+
+4a. THE RUNTIME WAS SILENTLY REWRITING THE COMMAND
+
+`srt` has its own `-c` flag ("run command string directly") and parses options
+anywhere on the line. So `aegis run -- bash -c '<script>'`, handed to it
+without a separator, was read as the RUNTIME's `-c`:
+
+    srt -s P bash -c '<script>'   ->  encodes 'cat /private/tmp/…'
+    srt -s P -- bash -c '<script>' -> encodes "bash -c 'cat /private/tmp/…'"
+
+Without `--`, `bash` was dropped and the script ran under the runtime's own
+shell. It worked, which is why nothing noticed — but the process tree was not
+the one the operator asked for. `Sandbox.wrap()` now emits `--` first. That is
+a correctness fix independent of attribution, and it is what makes the recorded
+command equal the command.
+
+4b. THE FIRST ATTEMPT WAS WORSE THAN THE BUG
+
+Computing the tag as a plain space-join classified the session's OWN denials as
+foreign:
+
+    the session read two denied files and one allowed one.
+    rows recorded: 0
+
+Silently deleting real denials from a tamper-evident log is a far worse failure
+than over-recording. The cause: the runtime SHELL-QUOTES the argv
+(`quote(commandArgs)`), so the prefix must too. More importantly, that near
+miss is why the fix has a fail-safe (§5).
+
+
+5. THE FIX
+--------------------------------------------------------------------------------
+
+Three outcomes per denial of a policy-denied path:
+
+  tag matches this session's prefix
+      -> recorded as `sandbox_denied`. Same rule_id, same meaning, plus a
+         guarantee it never carried: it was this session.
+
+  tag differs, AND this session has already seen its own tag
+      -> counted as foreign, named in the closing row, NOT recorded.
+
+  this session has NEVER seen its own tag
+      -> recorded as `sandbox_denied_unattributed`, whose reason says in words
+         that it may be another sandbox's.
+
+The third case is the fail-safe. A sandboxed process emits tagged benign
+denials (`sysctl-read kern.iossupportversion`) within moments of starting, so
+the prefix is normally proven before the first interesting denial. If it is
+not, Aegis will not discard on an unproven match.
+
+    AFTER — with tag attribution
+      session A ran `bash -c 'sleep 22'` and touched nothing
+      rows attributed to A: 0
+      closing row: 0 kernel denial(s) recorded, attributed to this session by
+                   its sandbox log tag; 1 denial(s) of a path this policy
+                   denies came from a DIFFERENT sandbox session and were not
+                   recorded here
+      chain: AEGIS-VERIFY-VERDICT: intact
+
+And the counter-check, which matters as much:
+
+    a session that read two denied files:
+      sandbox_denied  id_rsa
+      sandbox_denied  .env
+      closing: 2 kernel denial(s) recorded, attributed to this session by its
+               sandbox log tag
+
+
+6. WHAT THIS DOES NOT ESTABLISH
+--------------------------------------------------------------------------------
+
+  - The tag encodes the command TRUNCATED TO 100 CHARACTERS. Two concurrent
+    sessions whose commands agree in their first 100 characters are still
+    mutually attributable. Far narrower than "any two sessions", not zero.
+
+  - The suffix is not checked, only the command prefix. Two concurrent
+    `aegis run` invocations of the SAME command attribute each other's denials.
+    Both are honestly "an aegis run of this command denied this path"; neither
+    is "this process tree".
+
+  - Attribution depends on an implementation detail of the sandbox runtime —
+    the tag format and the fact that macOS prints it. A runtime that stops
+    tagging turns every row into the fail-safe's unattributed form, which is
+    visible in the closing summary rather than silent, but is a regression in
+    precision that Aegis cannot prevent.
+
+  - Nothing here addresses the OTHER half of S2 gap 1: `audit.db` is writable
+    from inside the sandbox, and attribution is not integrity.

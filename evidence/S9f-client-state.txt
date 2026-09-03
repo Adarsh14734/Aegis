@@ -1,0 +1,167 @@
+S9f — what a client must be able to write, and what it must not
+================================================================================
+
+Captured on macOS 25.5.0 (Darwin), 2026-09-02, with
+@anthropic-ai/sandbox-runtime (`srt`) and Claude Code v2.1.258.
+
+THE REPORT
+
+    API Error: 401 OAuth access token has expired
+    Transcript writes are failing (permission denied — EPERM)
+    /rc failed
+
+in a live sandboxed session, with S9d (endpoints) and S9e (terminal) both in
+and working.
+
+
+1. THE CONTROL, RUN FIRST THIS TIME
+--------------------------------------------------------------------------------
+
+The same client, the same directory, no sandbox at all:
+
+    401 / login        no
+    transcript EPERM   no
+    /rc failed         no
+    ...Hello! What can I help you with today?
+
+So all three symptoms are caused by the sandbox, not by an expired login.
+
+
+2. WHAT THE KERNEL REFUSED
+--------------------------------------------------------------------------------
+
+Read from the macOS unified log — the same source aegis/violations.py uses.
+One trap: the Claude Code binary lives at ~/.local/share/claude/versions/2.1.258
+and the process is therefore NAMED `2.1.258`. A filter on "claude" finds
+nothing, which is why a first pass reported zero denials.
+
+    8x  2.1.258  file-write-create  /Users/adarsh/.claude/.oauth_refresh.lock
+    7x  2.1.258  file-write-create  /Users/adarsh/.claude.json.lock
+    2x  2.1.258  file-write-create  /Users/adarsh/.claude/projects/<slug>
+    1x  2.1.258  file-write-mode    /Users/adarsh/.claude/sessions
+    1x  2.1.258  file-write-create  /Users/adarsh/.local/state/claude/locks/2.1.258.lock.tmp.*
+    6x  2.1.258  file-write-create  /Users/adarsh/.claude.json.tmp.*
+    1x  2.1.258  network-bind       /private/tmp/cc-socks/<pid>.sock
+
+Note that ioctl denials do NOT appear here (S9e) but write denials do.
+
+
+3. WHICH GRANT CLEARS WHICH SYMPTOM
+--------------------------------------------------------------------------------
+
+    grant                                    401   transcript   /rc
+    (unsandboxed control)                    no    no           no
+    today — nothing                          YES   YES          YES
+    ~/.claude + ~/.local/state/claude        no*   no           no*
+    ...+ ~/.claude.json                      no*   no           no*
+    ...+ allowUnixSockets(/private/tmp/cc-socks)  no  no        no
+    ~/.claude ALONE                          no    no           no
+
+  * The first runs still showed 401 because the token was genuinely stale by
+    then; the unsandboxed control refreshed it, and every run afterwards was
+    clean. That is why the control matters: without it the 401 looks like a
+    permanent sandbox failure rather than a refresh that could not complete.
+
+`~/.claude` alone clears all three. `/rc` was failing DOWNSTREAM of the 401 —
+the socket bind is still refused in the passing runs and remote control works
+anyway, so no unix-socket grant is needed.
+
+
+4. WHAT IS DELIBERATELY NOT GRANTED
+--------------------------------------------------------------------------------
+
+  ~/.claude.json, ~/.claude.json.lock, ~/.claude.json.tmp.*, ~/.claude.lock
+
+  All four sit DIRECTLY IN THE HOME DIRECTORY. The client writes that file
+  with the usual atomic dance — lock, temp sibling, rename — so granting the
+  file alone is not enough; it would take a pattern in $HOME. Measured: the
+  client works without any of them. What it costs is that whatever the client
+  stores in that file does not persist between sandboxed launches.
+
+  A unix-socket grant. Not needed, per §3.
+
+  Anything for cursor, windsurf, cline. Not measured on this machine.
+
+
+5. WHERE THE CREDENTIALS ACTUALLY ARE
+--------------------------------------------------------------------------------
+
+  ~/.claude.json  ->  `oauthAccount` holds account METADATA only: email,
+                      display name, org name/UUID, billing tier. Scanned every
+                      string value in the file for token shapes; the only long
+                      opaque values are `userID` and `machineID`, which are
+                      identifiers, not credentials.
+
+  Keychain        ->  `security find-generic-password -s "Claude Code-credentials"`
+                      finds an item. The token lives there on this machine.
+                      (Existence checked; the value was never read.)
+
+  ~/.claude/.credentials.json  ->  absent here, but this is the documented
+                      location on installs that do not use the Keychain.
+
+  ~/.claude/sessions/*.key     ->  present, 0600, 108 bytes. Key material.
+
+  ~/.claude/projects/*.jsonl   ->  transcripts. They contain whatever was said
+                      or pasted into a session.
+
+
+6. THE DANGEROUS PART OF THE GRANT, AND THE CARVE-OUT
+--------------------------------------------------------------------------------
+
+~/.claude holds state, and it also holds two things that are not state:
+
+  settings.json   can define HOOKS — shell commands the client runs. Write
+                  access to it is arbitrary code execution OUTSIDE the sandbox
+                  at the next launch. A sandbox escape with extra steps.
+  plugins/        executable plugin code, same reasoning.
+  .credentials.json  the token itself, where the Keychain is not used.
+
+These go in denyWrite, which beats allowWrite. Verified rather than assumed,
+with the deny-listed files created OUTSIDE the sandbox first so the test is not
+trivially satisfied by their absence:
+
+    REFUSED   delete a deny-listed file that EXISTS
+    REFUSED   delete a file inside a deny-listed dir
+    REFUSED   truncate it in place
+    REFUSED   rename it away
+    REFUSED   append to settings.json
+    REFUSED   create .credentials.json
+    SUCCEEDED write an ordinary state file in the same directory
+    SUCCEEDED read settings.json          <- the residual, see §7
+
+    probe still exists: True   contents intact: True
+
+
+7. THE RESIDUAL, STATED RATHER THAN ELIDED
+--------------------------------------------------------------------------------
+
+  - The grant is not client-specific. The sandbox cannot tell the client's
+    write from its Bash tool's, exactly as it cannot tell their network
+    requests apart (S9d). Anything in the tree can write the granted
+    directories.
+
+  - READING is not restricted and could not be: the client has to read its own
+    settings and credentials to start. This is NOT new — read has been
+    allow-by-default in this runtime since S9, so the agent could already read
+    that directory before S9f granted writes to it. S9f adds modification, not
+    exposure.
+
+  - An install that keeps its OAuth token in a file rather than the Keychain
+    therefore has that file readable by the sandboxed tree. Aegis does not
+    change that. Listing it in deny_paths closes it, at the cost of the client
+    being unable to authenticate.
+
+  Recorded as THREAT-MODEL.md §7.11.
+
+
+8. WHAT THIS FILE DOES NOT ESTABLISH
+--------------------------------------------------------------------------------
+
+  - That ~/.claude is sufficient for every Claude Code feature. It is
+    sufficient for a session start, token refresh, transcripts and remote
+    control, measured. A feature not exercised in these runs may need
+    something else; the kernel names it when it does.
+
+  - Anything about cursor, windsurf or cline.
+
+  - Anything about Linux. These are Seatbelt denials.

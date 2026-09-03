@@ -93,6 +93,35 @@ def _resolved(path) -> str:
     return str(Path(path).expanduser().resolve())
 
 
+# The temp root the agent's process tree actually writes to.
+#
+# Every agent runtime makes a scratch directory before it does anything else, so
+# a profile with no writable temp cannot launch an agent at all: Claude Code
+# dies with `EPERM: operation not permitted, mkdir '/tmp/claude-501'` before it
+# prints its first line. A sandbox that looks like a broken install is a sandbox
+# that gets switched off, which costs C1..C11 rather than saving anything.
+#
+# This is /tmp and deliberately NOT $TMPDIR, which is the counter-intuitive
+# part. macOS's per-user private temp is the narrower grant and would be the one
+# to prefer -- except that the sandbox runtime REWRITES TMPDIR to /tmp/claude
+# for everything it launches, so the scratch path an agent derives INSIDE the
+# sandbox is under /tmp whatever $TMPDIR said outside it. Granting $TMPDIR
+# fixes nothing and widens the boundary for free: it would hand the agent the
+# user's entire per-user temp, which is exactly where tempfile.mkdtemp() puts
+# the directories S9's own suite uses to prove a write outside workspace_roots
+# fails. Measured inside `srt`, not assumed.
+#
+# A narrower glob (`/private/tmp/claude*`) was tried and does not hold: this
+# runtime matches such a directory itself but still refuses the creation of
+# children under it, so the agent cannot make its own subdirectories.
+#
+# /tmp is world-writable on macOS already (drwxrwxrwt), so this grants the tree
+# nothing it could not reach unsandboxed, and it stays bounded the way the data
+# directory does: denyWrite beats allowWrite, and every deny_paths pattern is
+# anchored at `/**/...`, so a secret spelled `.env` is still denied at /tmp/.env.
+SYSTEM_TEMP_ROOT = "/tmp"
+
+
 def _deny_globs(pattern: str) -> list[str]:
     """Translate one policy `deny_paths` entry into sandbox glob(s).
 
@@ -148,6 +177,11 @@ def profile_from_policy(policy, deny_all_network: bool = False) -> dict:
                    cannot record is a proxy that denies everything, so a sandbox
                    that denied this would take C1..C10 down with it.
                    trash_dir, for the same reason (C9 stages copies there).
+                   SYSTEM_TEMP_ROOT, because an agent that cannot create
+                   its scratch directory never starts.
+                   sandbox_state_paths, so a wrapped client can write its own
+                   state — without it the client starts and then fails every
+                   request. See THE CLIENT'S STATE below.
 
       denyWrite    policy.json and KILLSWITCH, explicitly, and denyWrite beats
                    allowWrite in this runtime. These two are the reason the data
@@ -169,17 +203,80 @@ def profile_from_policy(policy, deny_all_network: bool = False) -> dict:
     compatibility problem and then gets turned off (D4's reasoning, applied to
     something other than prompts).
 
+    THE CLIENT'S STATE (S9f)
+
+    A client launched through the S9c wrapper runs inside this profile, and
+    until S9f the profile granted it nowhere to write but the workspace, the
+    Aegis data directory and /tmp. Its own state directory was not among them,
+    so on macOS Claude Code could not take its OAuth refresh lock, could not
+    write a transcript, and failed every request with a 401 that looked like an
+    expired login. Measured, with the paths taken from kernel denials rather
+    than guessed — evidence/S9f-client-state.txt.
+
+    `sandbox_state_paths` grants those directories and `sandbox_state_protect`
+    carves the dangerous files back out of the grant. The residual is real and
+    is stated in THREAT-MODEL.md §7.11: a granted state directory is writable
+    by everything in the tree, including a Bash tool, not only by the client.
+
+    THE TERMINAL (S9e)
+
+    `allowPty` decides whether the runtime emits its pty rules: pseudo-tty
+    access, plus ioctl and read/write on the terminal devices themselves,
+    /dev/ptmx and /dev/ttys*. Those rules are the runtime's, and are described
+    here rather than reproduced — this file states intent in a settings
+    document and never spells a sandbox profile, which is the D2 property
+    tests/s9.py checks by grepping this source.
+
+    Without them every ioctl on the terminal is refused. `tcsetattr` returns
+    EPERM, nothing inside can enter raw mode, and an interactive client is
+    left with the tty in canonical+echo — which is why mouse reports appeared
+    as literal text in the prompt and why `stty -a` printed nothing.
+
+    Measured, not reasoned about: handing sandbox-exec a profile that refuses
+    ioctl reproduces the same `stty: TIOCGETD: Operation not permitted`, and
+    the failure is byte-identical under `srt` alone, so it was never anything
+    `aegis run` did to the process it spawns.
+
+    What it grants is terminal devices and nothing else: `/dev/ptmx` and
+    `/dev/ttys*`. It moves no path in denyRead, denyWrite or allowWrite and no
+    entry in either domain list — asserted in tests/s9.py by comparing the two
+    documents directly, and by re-running every kernel-denial check with it on.
+    It is a real capability all the same: a process inside can then open
+    another terminal owned by the same user. An unsandboxed agent could
+    already do that, so this declines to add a protection rather than removing
+    one, but the distinction is worth stating rather than eliding.
+
     Network is allow-only and starts empty, so `curl` reaches nothing unless
-    policy named it. `allowed_domains` is passed through so the proxy's own
-    egress (S8, C4) still works from inside. What that buys and what it does
-    not is in S9-REPORT.md §The network residual — briefly: the sandbox cannot
-    tell the proxy's request from bash's, so bash can also reach an allowed
-    domain. `deny_all_network=True` closes that at the cost of C4's egress.
+    policy named it. TWO lists feed it, and they are unioned here and nowhere
+    else:
+
+      allowed_domains   the proxy's own egress allowlist (S8, C4), passed
+                        through so a fetch tool that Aegis permits can also
+                        leave the sandbox.
+      sandbox_domains   hosts the process tree may reach that Aegis itself
+                        never fetches — in practice the client's own API and
+                        update endpoints. See policy.py::_load_sandbox_domains
+                        for why this is a separate key rather than more entries
+                        in the first one.
+
+    What that buys and what it does not is in S9-REPORT.md §The network
+    residual — briefly: the sandbox cannot tell the proxy's request from
+    bash's, so bash can also reach an allowed domain. That residual is why
+    sandbox_domains is kept as short as it can be and still let the client
+    start. `deny_all_network=True` clears BOTH lists, at the cost of C4's
+    egress and of the client being able to function.
     """
     allow_write = [_resolved(root) for root in policy.workspace_roots]
     allow_write.append(_resolved(default_db_path().parent))
     if policy.trash_dir is not None:
         allow_write.append(_resolved(policy.trash_dir))
+    allow_write.append(_resolved(SYSTEM_TEMP_ROOT))
+    # S9f. The client's own state directory, when policy names one. Not the
+    # home directory — policy.py refuses that outright — and nothing here is
+    # derived: the paths come from the policy, which `aegis init` fills in from
+    # a measured table.
+    for state in getattr(policy, "sandbox_state_paths", ()):
+        allow_write.append(_resolved(state))
 
     deny_read: list[str] = []
     deny_write: list[str] = [
@@ -200,11 +297,30 @@ def profile_from_policy(policy, deny_all_network: bool = False) -> dict:
             deny_read.append(_resolved(folder) + "/**")
             deny_write.append(_resolved(folder))
             deny_write.append(_resolved(folder) + "/**")
+    # S9f. Read-only islands inside a granted state directory: the files whose
+    # contents are code the client will run, or credentials. denyWrite beats
+    # allowWrite in this runtime, so these survive the grant around them.
+    # Deliberately NOT added to deny_read: the client has to read its own
+    # settings to start, and denying that would break the thing being fixed.
+    # The `/**` is appended whether the entry is a file or a directory. On a
+    # file it matches nothing and costs a line; deciding by is_dir() would be
+    # wrong for a path that does not exist yet, which is exactly the case for a
+    # credentials file on a machine that keeps its token in the Keychain.
+    for protect in getattr(policy, "sandbox_state_protect", ()):
+        deny_write.append(_resolved(protect))
+        deny_write.append(_resolved(protect) + "/**")
+
     for pattern in policy.deny_paths:
         deny_read.extend(_deny_globs(pattern))
         deny_write.extend(_deny_globs(pattern))
 
-    domains = [] if deny_all_network else [str(d) for d in policy.allowed_domains]
+    # getattr for both, matching how folder_rules is read above: the suites
+    # build policy stand-ins, and a missing attribute must read as "no domains"
+    # rather than raising — deny-by-default survives a partial object.
+    domains: list[str] = []
+    if not deny_all_network:
+        domains += [str(d) for d in getattr(policy, "allowed_domains", ())]
+        domains += [str(d) for d in getattr(policy, "sandbox_domains", ())]
 
     return {
         "filesystem": {
@@ -216,6 +332,10 @@ def profile_from_policy(policy, deny_all_network: bool = False) -> dict:
             "allowedDomains": sorted(set(domains)),
             "deniedDomains": [],
         },
+        # Always emitted, true or false, so the document says what it means
+        # rather than meaning something by omission — and so turning it off
+        # moves the digest visibly instead of silently.
+        "allowPty": bool(getattr(policy, "sandbox_pty", True)),
     }
 
 
@@ -317,8 +437,19 @@ class Sandbox:
     platform: str
 
     def wrap(self, argv: list[str]) -> list[str]:
-        """The argv that runs `argv` inside this sandbox."""
-        return [self.runtime, "-s", str(self.profile), *argv]
+        """The argv that runs `argv` inside this sandbox.
+
+        The `--` is not decoration. The runtime's own CLI takes a `-c` flag
+        ("run command string directly"), and it parses options anywhere on the
+        line, so `aegis run -- bash -c 'script'` handed it without a separator
+        was read as *the runtime's* `-c`: `bash` was dropped and the script was
+        run by the runtime's shell instead. It worked, which is why nothing
+        noticed — but the process tree was not the one the operator asked for,
+        and the runtime recorded the command as `script` rather than
+        `bash -c script`. Measured while building S9j's attribution, which
+        needs the recorded command to be the command.
+        """
+        return [self.runtime, "-s", str(self.profile), "--", *argv]
 
     def summary(self) -> str:
         fs = self.document["filesystem"]
@@ -329,6 +460,10 @@ class Sandbox:
             f"{len(fs['allowWrite'])} writable root(s), "
             f"{len(fs['denyRead'])} read-denied pattern(s), "
             f"{len(net)} domain(s) reachable"
+            + (f": {', '.join(net)}" if net else "")
+            + ("; terminal control allowed"
+               if self.document.get("allowPty") else
+               "; NO terminal control — an interactive client cannot enter raw mode")
         )
 
 

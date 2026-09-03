@@ -1,0 +1,187 @@
+S9i — the first end-to-end verification of the MCP proxy, and what it found
+================================================================================
+
+Captured 2026-09-03 on macOS 25.5.0, with the real
+@modelcontextprotocol/server-filesystem (fetched via npx) and Claude Code
+v2.1.258.
+
+WHY THIS FILE EXISTS
+
+Half the architecture had never been exercised outside the test suite.
+`aegis doctor` had always reported "PROOF: a real tool call is denied and
+recorded" as not attempted, because no MCP server was ever configured in a real
+project. The policy proxy — C1, C2, the thing that mediates MCP tool calls —
+was unproven on a real installation.
+
+SETUP
+
+  project   .../scratchpad/mcpproof/project    (workspace root)
+            notes/todo.md    an ordinary file
+            .env             matches deny_paths
+  server    npx -y @modelcontextprotocol/server-filesystem <project>
+  routed by `aegis init`, which rewrote .mcp.json:
+
+      -  "command": "npx",
+      -  "args": ["-y", "@modelcontextprotocol/server-filesystem", "<project>"]
+      +  "command": ".../python3",
+      +  "args": ["-m", "aegis.proxy", "--", "npx", "-y",
+      +           "@modelcontextprotocol/server-filesystem", "<project>"]
+
+  The audit log and policy were pinned into the lab. The operator's real chain
+  was verified intact afterwards.
+
+
+1. PROOF PASSES
+--------------------------------------------------------------------------------
+
+    [  ok  ] PROOF: a real tool call is denied and recorded
+               server 'filesystem' from .../project/.mcp.json
+               ran: .../python3 -m aegis.proxy -- npx -y
+                    @modelcontextprotocol/server-filesystem .../project
+               asked it to open /Users/adarsh/.ssh/aegis-doctor-probe with the
+               'read_text_file' tool, which this policy otherwise allows
+               it answered: AEGIS DENIED
+               audit row 1 appeared (was 0): tool=read_text_file effect=deny
+                                             rule=deny_paths
+               the chain still verifies with that row in it
+
+First time this check has ever run on a real installation.
+
+
+2. THE REFUSAL IS THE PROXY'S — PROVED BY DISCRIMINATION, NOT ASSERTION
+--------------------------------------------------------------------------------
+
+doctor's own probe uses a path OUTSIDE the filesystem server's root, and that
+server refuses such paths itself. So the probe alone cannot distinguish "the
+proxy denied it" from "the server denied it".
+
+The discriminator is a path INSIDE the server's allowed root that only the
+POLICY denies: <project>/.env. Driven over raw JSON-RPC on stdio, with no
+client and no model anywhere in the loop.
+
+    DIRECT — the server with no proxy in front of it
+      read_text_file(<project>/notes/todo.md) -> allowed: an ordinary note
+      read_text_file(<project>/.env)          -> allowed: TOKEN=proof-env-secret
+
+    THROUGH aegis proxy
+      read_text_file(<project>/notes/todo.md) -> allowed: an ordinary note
+      read_text_file(<project>/.env)          -> DENIED:
+          AEGIS DENIED: read_text_file
+          Reason: path matches deny rule '.env'
+          Rule: deny_paths
+
+The server reads the file happily. Only the proxy refuses it. The benign file
+passes through the proxy unchanged, so the proxy is not simply blocking
+everything. The secret bytes never crossed.
+
+
+3. THE TWO KINDS OF DENIAL ARE DISTINGUISHABLE IN THE LOG
+--------------------------------------------------------------------------------
+
+Both produced in the same database, which still verifies:
+
+  [PROXY  C1/C2] row 3
+      tool     read_text_file
+      rule_id  deny_paths
+      reason   path matches deny rule '.env'
+
+  [KERNEL C11 ] row 5
+      tool     sandbox:cat
+      rule_id  sandbox_denied
+      reason   the kernel refused file-read-data on ... inside the Aegis
+               sandbox. This is an OS-level denial (EPERM), not a
+               policy-engine decision...
+
+Different tool prefix, different rule_id, different language. Full log:
+
+    1  read_text_file  deny   deny_paths                 (doctor's probe)
+    2  read_text_file  allow  tool_rules.read_text_file  (notes/todo.md)
+    3  read_text_file  deny   deny_paths                 (.env)
+    4  aegis run       allow  sandbox_established
+    5  sandbox:cat     deny   sandbox_denied             (.env, kernel)
+    6  sandbox:cat     deny   sandbox_denied             (id_rsa, kernel)
+    7  aegis run       allow  sandbox_closed
+
+    AEGIS-VERIFY-VERDICT: intact
+
+
+4. THE FINDING: EVERY CHECK GREEN, NOTHING MEDIATED
+--------------------------------------------------------------------------------
+
+    $ aegis doctor
+    [  ok  ] MCP configuration points at the proxy
+    [  ok  ] No client is still running the old wiring
+    [  ok  ] PROOF: a real tool call is denied and recorded
+
+    $ claude mcp list
+    filesystem: ... -m aegis.proxy -- npx ... - PENDING APPROVAL
+                                                (run `claude` to approve)
+
+The client had never connected to the server. Nothing was being mediated at
+all, and the report said everything was fine.
+
+Both green checks were green for the wrong reason:
+
+  PROOF launches the server ITSELF. It proves the proxy works when run; it
+  says nothing about whether the client is using it, because there is no
+  client in that test.
+
+  "No client is still running the old wiring" looks for a process running the
+  UNWRAPPED command. A server nobody has launched is not running at all, so
+  the check passes vacuously — the strongest possible pass for the weakest
+  possible reason.
+
+Cause: Claude Code holds project-scoped .mcp.json servers at "Pending
+approval" until the user accepts them — reasonably, since a repository should
+not be able to run arbitrary commands. `aegis init` CHANGES the command, so a
+server approved before may need approving again. No non-interactive approval
+path exists (`claude mcp --help` offers none).
+
+Fixed by a new check, `_check_server_live`, which asks whether a process
+matching the routed server is actually running behind a proxy right now.
+
+
+5. A BUG IN THE FIX, RECORDED BECAUSE IT WAS MEASURED HERE
+--------------------------------------------------------------------------------
+
+The first version of that check reused CLIENT_HINTS — a loose substring match
+— to answer "is a client running?", and reported:
+
+    but CursorUIViewService IS running, and has not launched that server
+
+CursorUIViewService is an Apple input-method helper in
+/System/Library/PrivateFrameworks/UIFoundation.framework. It has nothing to do
+with the Cursor editor. CLIENT_HINTS is fine where it is used — walking the
+ancestry of a process already known to be a configured server — and wrong
+across the whole process table.
+
+Client detection now matches the executable path in the three shapes a client
+actually takes:
+
+    /Applications/Claude.app/Contents/MacOS/Claude    an app bundle
+    ~/.local/bin/claude                                a binary on PATH
+    ~/.local/share/claude/versions/2.1.258             the CLI's real binary,
+                                                       whose basename is a
+                                                       VERSION NUMBER
+
+That last shape is the same trap S9f hit: an obvious filter on "claude" finds
+nothing, because the process is named after its version.
+
+
+6. WHAT THIS FILE DOES NOT ESTABLISH
+--------------------------------------------------------------------------------
+
+  - That a real Claude Code session, with the server approved and connected,
+    denies a tool call end to end. The server was left at "Pending approval":
+    accepting it writes a project entry into the operator's ~/.claude.json,
+    and every claim above was provable without it. The raw JSON-RPC test in §2
+    is stronger evidence anyway, because it removes the client and the model —
+    the two things that could otherwise have done the refusing.
+
+  - Anything about other MCP clients. Only Claude Code's approval behaviour was
+    observed.
+
+  - That the fingerprint match in `_check_server_live` cannot miss. It is the
+    same heuristic `_check_stale_clients` uses and is described as one: a
+    client can hold a server whose command line resembles nothing in the
+    configuration.

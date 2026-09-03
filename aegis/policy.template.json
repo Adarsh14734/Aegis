@@ -3,6 +3,7 @@
   "workspace_roots": [],
   "deny_paths": [".env", "*.pem", "id_rsa", "**/.aws/**", "**/.ssh/**"],
   "allowed_domains": [],
+  "sandbox_domains": [],
   "tool_rules": {
     "read_file":                  {"effect": "allow", "within": ["<workspace>"]},
     "read_text_file":             {"effect": "allow", "within": ["<workspace>"]},
@@ -23,6 +24,9 @@
   "bulk_threshold": 10,
   "ask_timeout_seconds": 120,
   "trash_dir": null,
+  "sandbox_pty": true,
+  "sandbox_state_paths": [],
+  "sandbox_state_protect": [],
   "default_effect": "deny",
   "ask_behavior": "prompt"
 }

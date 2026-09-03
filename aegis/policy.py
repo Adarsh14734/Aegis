@@ -123,6 +123,9 @@ class Policy:
             raise PolicyError("deny_paths must be a list")
 
         self.allowed_domains = self._load_allowed_domains(doc)
+        self.sandbox_domains = self._load_sandbox_domains(doc)
+        self.sandbox_state_paths = self._load_state_paths(doc, "sandbox_state_paths")
+        self.sandbox_state_protect = self._load_state_paths(doc, "sandbox_state_protect")
         self.credentials = self._load_credentials(doc)
         self.folder_rules = self._load_folder_rules(doc)
 
@@ -165,6 +168,32 @@ class Policy:
                 f"ask_behavior must be 'prompt' or 'deny', got {behaviour!r}"
             )
         self.ask_behavior = Effect.ASK if behaviour in ("prompt", "ask") else Effect.DENY
+
+        # S9e. Whether the sandboxed process tree may drive a terminal.
+        #
+        # It sounds cosmetic and is not. Without it the kernel refuses every
+        # ioctl on /dev/ttys*, so `tcsetattr` fails with EPERM and no program
+        # inside the sandbox can put the terminal into raw mode. A TUI then
+        # runs with the tty still in canonical+echo, and every escape sequence
+        # the terminal sends back — arrow keys, bracketed paste, mouse reports
+        # — is echoed by the tty driver as literal text into the input line.
+        # That is the reported `^[[<65;63;22M` bug, and it made every
+        # interactive client launched through `aegis run` unusable.
+        #
+        # Default true, because the default has to be a client that works. It
+        # lives in the policy rather than being decided from os.isatty() at
+        # launch so the profile stays a pure function of policy.json: a
+        # document that changed with the caller's terminal would make its own
+        # digest unstable, and `aegis doctor` compares that digest to decide
+        # whether the kernel is enforcing the current rules.
+        #
+        # Setting it false is the narrower profile and is the right choice for
+        # a headless run that never attaches a terminal. It costs nothing
+        # there and breaks every TUI everywhere else.
+        pty = doc.get("sandbox_pty", True)
+        if not isinstance(pty, bool):
+            raise PolicyError(f"sandbox_pty must be true or false, got {pty!r}")
+        self.sandbox_pty = pty
 
         # C7. How long a prompt waits before denying. Not unbounded: a proxy
         # blocked forever on a prompt nobody is looking at is a hung agent, and
@@ -267,6 +296,102 @@ class Policy:
         if raw is None:
             return ()
         return Policy._normalize_host_list(raw, "allowed_domains")
+
+    @staticmethod
+    def _load_state_paths(doc: dict, key: str) -> tuple[Path, ...]:
+        """Directories a sandboxed client may write for its OWN state, and the
+        paths inside them that stay read-only anyway.
+
+        `sandbox_state_paths`    added to the profile's allowWrite.
+        `sandbox_state_protect`  added to its denyWrite, which beats allowWrite
+                                 in this runtime. These are the files inside a
+                                 granted directory that must never become
+                                 writable, because writing them is code
+                                 execution or credential theft rather than
+                                 state — see launcher.py's table.
+
+        Only sandbox.py reads either. Neither reaches policy.py's own decision
+        path, so granting a client its state directory does not make that
+        directory reachable through an MCP tool call.
+
+        THE ONE THING THAT MAY NOT BE GRANTED IS THE HOME DIRECTORY.
+        `~/.claude` is a client's state; `~` is everything the user owns, and a
+        policy that granted it would hand the agent write access to every
+        config file, shell rc and ssh directory on the machine while still
+        reading as a modest two-line policy. `/` is refused for the same
+        reason, and so is a glob: a write grant that can match by pattern is a
+        write grant nobody can read off the page.
+        """
+        raw = doc.get(key)
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            raise PolicyError(f"{key} must be a list")
+        home = Path.home().resolve()
+        out: list[Path] = []
+        for entry in raw:
+            if not isinstance(entry, str) or not entry.strip():
+                raise PolicyError(f"{key} entry {entry!r} is not a non-empty string")
+            if any(ch in entry for ch in "*?["):
+                raise PolicyError(
+                    f"{key} entry {entry!r}: patterns are not allowed here. A "
+                    f"write grant has to name the directory it grants."
+                )
+            resolved = Path(entry).expanduser()
+            # Not .resolve(): a protected path may legitimately not exist yet
+            # (a credentials file that has never been written), and resolve()
+            # of a missing path is fine while resolve() of a symlink is the
+            # thing we want to see through. absolute() + resolve(strict=False)
+            # gives both.
+            resolved = Path(os.path.abspath(resolved)).resolve()
+            if resolved == home:
+                raise PolicyError(
+                    f"{key} may not contain the home directory ({resolved}). "
+                    f"Grant the client's own state directory, not everything "
+                    f"the user owns."
+                )
+            if resolved == Path(resolved.anchor):
+                raise PolicyError(f"{key} may not contain the filesystem root")
+            out.append(resolved)
+        return tuple(out)
+
+    @staticmethod
+    def _load_sandbox_domains(doc: dict) -> tuple[str, ...]:
+        """Hosts the sandboxed PROCESS TREE may reach. Deliberately not
+        `allowed_domains`.
+
+        The two lists answer different questions and have different blast
+        radii, so they are different keys:
+
+          allowed_domains   where the AGENT'S OWN tool calls may go. C4 reads
+                            it (egress.py, fetch.py) to decide whether a URL in
+                            a tool argument is permitted, and a host listed
+                            here becomes fetchable *through Aegis*, with the
+                            credential broker and the audit trail attached.
+
+          sandbox_domains   where the sandboxed process tree may open a socket
+                            at all. Only sandbox.py reads it. A host here is
+                            reachable by the client, by its Bash tool and by
+                            everything it spawns — and by nothing that goes
+                            through the proxy, because the proxy does not
+                            consult this list.
+
+        The distinction exists because of what S9c made the default. A client
+        launched through the wrapper starts inside the sandbox, and the sandbox
+        starts with zero reachable domains — so the client cannot reach its own
+        API and does not work at all. Fixing that by adding the client's
+        endpoints to `allowed_domains` would also hand the agent's fetch tool
+        an allowlisted route to those hosts, which is a widening of a different
+        control that nobody asked for. This key grants the socket without
+        granting the tool.
+
+        Same validation as `allowed_domains`, so no wildcard and no '*': the
+        list can only ever name hosts. There is no spelling of "everything".
+        """
+        raw = doc.get("sandbox_domains")
+        if raw is None:
+            return ()
+        return Policy._normalize_host_list(raw, "sandbox_domains")
 
     @staticmethod
     def _normalize_host_list(raw, where: str) -> tuple[str, ...]:
